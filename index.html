@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ETH Signal Terminal — Live</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+  :root{ --bg:#0D0F14; --panel:#161A22; --line:#2A2F3A; --text:#E4E6EB; --dim:#8A93A6; --bull:#4EA672; --bear:#B4472E; --amber:#D9A441; }
+  *{box-sizing:border-box;}
+  body{margin:0; background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans-serif;}
+  .mono{font-family:'IBM Plex Mono',monospace;}
+  .wrap{max-width:900px;margin:0 auto;padding:28px 20px 60px;}
+  .topbar{display:flex; align-items:baseline; justify-content:space-between; border-bottom:1px solid var(--line); padding-bottom:16px; margin-bottom:16px; flex-wrap:wrap; gap:12px;}
+  h1{font-size:19px;font-weight:600;margin:0;}
+  .sub{color:var(--dim);font-size:12.5px;margin-top:4px;}
+  .mode-toggle{display:flex;border:1px solid var(--line);}
+  .mode-btn{background:none;border:none;color:var(--dim);font-family:'Space Grotesk',sans-serif;font-size:12.5px;padding:8px 14px;cursor:pointer;border-right:1px solid var(--line);}
+  .mode-btn:last-child{border-right:none;}
+  .mode-btn.active{color:var(--amber);background:rgba(217,164,65,0.08);}
+  .hero{display:flex; align-items:flex-end; justify-content:space-between; padding:20px 0 24px; border-bottom:1px solid var(--line); margin-bottom:22px;}
+  .hero-price .label{color:var(--dim);font-size:12px;margin-bottom:6px;}
+  .hero-price .value{font-size:32px;font-weight:600;}
+  .hero-signal{text-align:right;}
+  .hero-signal .call{font-size:28px;font-weight:700;letter-spacing:1px;}
+  .call.BUY{color:var(--bull);} .call.SHORT{color:var(--bear);} .call.HOLD{color:var(--dim);}
+  .hero-signal .conf{color:var(--dim);font-size:12px;margin-top:4px;}
+  .weights{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--line);margin-bottom:22px;}
+  .weights div{padding:14px;border-right:1px solid var(--line);}
+  .weights div:last-child{border-right:none;}
+  .weights .label{color:var(--dim);font-size:11.5px;margin-bottom:4px;}
+  .weights .val{font-size:18px;font-weight:600;}
+  .section-head{display:flex;justify-content:space-between;align-items:baseline;margin:26px 0 10px;}
+  .section-head h2{font-size:14px;font-weight:600;margin:0;}
+  .stat-line{color:var(--dim);font-size:12px;}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;}
+  th{text-align:left;color:var(--dim);font-weight:500;font-size:11px;border-bottom:1px solid var(--line);padding:8px 10px;}
+  td{padding:8px 10px;border-bottom:1px solid var(--line);}
+  .badge{padding:2px 7px;font-size:11px;display:inline-block;}
+  .badge.correct{color:var(--bull);border:1px solid var(--bull);}
+  .badge.wrong{color:var(--bear);border:1px solid var(--bear);}
+  .badge.pending{color:var(--dim);border:1px solid var(--line);}
+  .empty{color:var(--dim);font-size:12.5px;padding:16px 0;}
+  .last-updated{color:var(--dim);font-size:11.5px;}
+  .footnote{color:var(--dim);font-size:11px;margin-top:26px;line-height:1.6;border-top:1px solid var(--line);padding-top:14px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <div>
+      <h1>ETH SIGNAL TERMINAL</h1>
+      <div class="sub" id="sub">Live read-only view — data collected 24/7 in the background</div>
+    </div>
+    <div class="mode-toggle">
+      <button class="mode-btn active" id="btnSwing">Swing</button>
+      <button class="mode-btn" id="btnDay">Day-trade</button>
+    </div>
+  </div>
+
+  <div class="hero">
+    <div class="hero-price">
+      <div class="label">ETH / USD</div>
+      <div class="value mono" id="priceVal">—</div>
+    </div>
+    <div class="hero-signal">
+      <div class="call HOLD mono" id="callVal">—</div>
+      <div class="conf" id="confVal">confidence —</div>
+    </div>
+  </div>
+
+  <div class="weights">
+    <div><div class="label">Technical</div><div class="val mono" id="wTech">—</div></div>
+    <div><div class="label">Whale flow</div><div class="val mono" id="wWhale">—</div></div>
+    <div><div class="label">Sentiment</div><div class="val mono" id="wSent">—</div></div>
+    <div><div class="label">Market context</div><div class="val mono" id="wContext">—</div></div>
+  </div>
+
+  <div class="section-head">
+    <h2>Signal log</h2>
+    <div class="stat-line" id="statLine"></div>
+  </div>
+  <table>
+    <thead id="logHead"><tr><th>Time</th><th>Price</th><th>Signal</th><th>Confidence</th><th>—</th><th>—</th><th>—</th></tr></thead>
+    <tbody id="logBody"></tbody>
+  </table>
+  <div class="empty" id="logEmpty" style="display:none;">No signals logged yet.</div>
+
+  <div class="last-updated" id="lastUpdated" style="margin-top:16px;"></div>
+
+  <div class="footnote">
+    Read-only dashboard fetching live from Supabase, refreshed every 60 seconds. The actual collection runs on a GitHub Actions schedule, independent of this page. Not financial advice.
+  </div>
+</div>
+
+<script>
+const SUPABASE_URL = 'https://bvqkgaciwzyxmvqhwaaj.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_0n2vH5-f2AhQiusPHwXD-w_2Gbh_9vu';
+
+const MODE_HORIZON_LABELS = {
+  swing: [['h1','1h'],['h24','24h'],['d7','7d']],
+  day: [['m15','15m'],['h1','1h'],['h4','4h']]
+};
+
+let currentMode = 'swing';
+
+async function fetchModeState(mode){
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/signal_state?mode=eq.${mode}&select=state`, {
+    headers:{ apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
+  });
+  const rows = await res.json();
+  return Array.isArray(rows) && rows.length ? rows[0].state : null;
+}
+
+function render(state, mode){
+  const horizons = MODE_HORIZON_LABELS[mode];
+  document.querySelectorAll('#logHead th').forEach((th,i)=>{
+    if(i>=4) th.textContent = horizons[i-4][1];
+  });
+
+  if(!state){
+    document.getElementById('priceVal').textContent = '—';
+    document.getElementById('callVal').textContent = 'no data yet';
+    document.getElementById('logEmpty').style.display = 'block';
+    document.getElementById('logBody').innerHTML = '';
+    return;
+  }
+
+  const log = state.log || [];
+  const latest = [...log].sort((a,b)=>b.ts-a.ts)[0];
+  if(latest){
+    document.getElementById('priceVal').textContent = '$'+latest.price.toFixed(2);
+    document.getElementById('callVal').textContent = latest.signal;
+    document.getElementById('callVal').className = 'call '+latest.signal+' mono';
+    document.getElementById('confVal').textContent = `confidence ${latest.confidence}% · as of ${new Date(latest.ts).toLocaleString()}`;
+  }
+
+  const w = state.weights || {};
+  document.getElementById('wTech').textContent = w.tech!=null ? Math.round(w.tech*100)+'%' : '—';
+  document.getElementById('wWhale').textContent = w.whale!=null ? Math.round(w.whale*100)+'%' : '—';
+  document.getElementById('wSent').textContent = w.sentiment!=null ? Math.round(w.sentiment*100)+'%' : '—';
+  document.getElementById('wContext').textContent = w.context!=null ? Math.round(w.context*100)+'%' : '—';
+
+  const body = document.getElementById('logBody');
+  const empty = document.getElementById('logEmpty');
+  const sorted = [...log].sort((a,b)=>b.ts-a.ts);
+  if(!sorted.length){ empty.style.display='block'; body.innerHTML=''; }
+  else{
+    empty.style.display='none';
+    const badgeFor = (h)=>{
+      if(!h || !h.graded) return '<span class="badge pending">···</span>';
+      return h.outcome==='correct' ? '<span class="badge correct">✓</span>' : '<span class="badge wrong">✗</span>';
+    };
+    body.innerHTML = sorted.slice(0,30).map(e=>{
+      const h = e.horizons || {};
+      const cells = horizons.map(([key])=>`<td>${badgeFor(h[key])}</td>`).join('');
+      return `<tr>
+        <td class="mono">${new Date(e.ts).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</td>
+        <td class="mono">$${e.price.toFixed(2)}</td>
+        <td class="mono">${e.signal}</td>
+        <td class="mono">${e.confidence}%</td>
+        ${cells}
+      </tr>`;
+    }).join('');
+  }
+
+  const parts = [];
+  horizons.forEach(([key,label])=>{
+    const graded = log.filter(e=>e.horizons && e.horizons[key] && e.horizons[key].graded);
+    if(graded.length){
+      const correct = graded.filter(e=>e.horizons[key].outcome==='correct').length;
+      parts.push(`${label} <b>${correct}/${graded.length}</b> (${Math.round(correct/graded.length*100)}%)`);
+    }
+  });
+  document.getElementById('statLine').innerHTML = parts.join(' · ') || 'no graded signals yet';
+}
+
+async function refresh(){
+  try{
+    const state = await fetchModeState(currentMode);
+    render(state, currentMode);
+    document.getElementById('lastUpdated').textContent = 'Page refreshed ' + new Date().toLocaleTimeString();
+  }catch(e){
+    document.getElementById('lastUpdated').textContent = 'Failed to load — will retry.';
+  }
+}
+
+document.getElementById('btnSwing').addEventListener('click', ()=>{
+  currentMode='swing';
+  document.getElementById('btnSwing').classList.add('active');
+  document.getElementById('btnDay').classList.remove('active');
+  refresh();
+});
+document.getElementById('btnDay').addEventListener('click', ()=>{
+  currentMode='day';
+  document.getElementById('btnDay').classList.add('active');
+  document.getElementById('btnSwing').classList.remove('active');
+  refresh();
+});
+
+refresh();
+setInterval(refresh, 60000);
+</script>
+</body>
+</html>
