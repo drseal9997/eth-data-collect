@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <title>ETH Signal Terminal — Live</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0D0F14">
+<link rel="icon" href="icon-192.png">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
@@ -85,33 +88,9 @@
   .outcome.up{color:var(--bull);}
   .outcome.down{color:var(--bear);}
   .legend-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;}
-
-  .disclaimer-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px;}
-  .disclaimer-box{max-width:480px;border:1px solid var(--line);background:var(--bg);padding:26px;}
-  .disclaimer-box h2{font-size:17px;margin:0 0 14px;}
-  .disclaimer-box p{font-size:13.5px;color:var(--text);line-height:1.65;margin:0 0 12px;}
-  .disclaimer-box .risk{color:var(--bear);font-weight:600;}
-  .disclaimer-actions{display:flex;gap:10px;margin-top:20px;}
-  .disclaimer-actions button{flex:1;padding:11px;font-family:'Space Grotesk',sans-serif;font-size:13.5px;cursor:pointer;border:1px solid var(--line);background:none;color:var(--text);}
-  .disclaimer-actions .accept{border-color:var(--amber);color:var(--amber);}
-  .disclaimer-actions .accept:hover{background:rgba(217,164,65,0.1);}
-  .disclaimer-actions .leave:hover{background:rgba(180,71,46,0.1);border-color:var(--bear);color:var(--bear);}
 </style>
 </head>
 <body>
-
-<div class="disclaimer-overlay" id="disclaimerOverlay">
-  <div class="disclaimer-box">
-    <h2>Before you continue</h2>
-    <p>This page shows <b>analytics only</b> — technical indicators, on-chain data, sentiment, and historical patterns, combined into a signal. It is <b>not financial advice</b> and not a recommendation to buy, sell, or hold anything.</p>
-    <p class="risk">Nothing here, or anywhere, can reliably predict future price movements. Trading carries real risk, including the risk of losing all of the money you put in — especially with leverage.</p>
-    <p>If you don't fully understand the risks of trading, or wouldn't be able to afford the loss, please don't trade based on this or any other tool.</p>
-    <div class="disclaimer-actions">
-      <button class="leave" id="disclaimerLeave">Leave this page</button>
-      <button class="accept" id="disclaimerAccept">I understand</button>
-    </div>
-  </div>
-</div>
 
 <div class="wrap">
   <div class="topbar">
@@ -694,25 +673,9 @@ setInterval(refresh, 60000);
 setInterval(renderPriceChart, 60000);
 setInterval(()=>fetchHeadlines().then(renderNews), 15*60000);
 
-(function initDisclaimer(){
-  const KEY = 'eth_signal_disclaimer_acknowledged_v1';
-  const overlay = document.getElementById('disclaimerOverlay');
-  let acknowledged = false;
-  try{ acknowledged = localStorage.getItem(KEY) === 'yes'; }catch(e){}
-  if(acknowledged){
-    overlay.style.display = 'none';
-  } else {
-    document.body.style.overflow = 'hidden';
-  }
-  document.getElementById('disclaimerAccept').addEventListener('click', ()=>{
-    try{ localStorage.setItem(KEY, 'yes'); }catch(e){}
-    overlay.style.display = 'none';
-    document.body.style.overflow = '';
-  });
-  document.getElementById('disclaimerLeave').addEventListener('click', ()=>{
-    window.location.href = 'https://www.google.com';
-  });
-})();
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('sw.js').catch(()=>{});
+}
 </script>
 </body>
 </html>
