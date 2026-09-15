@@ -97,10 +97,37 @@
   .install-banner .install-btn{border-color:var(--amber);color:var(--amber);}
   .install-banner .install-btn:hover{background:rgba(217,164,65,0.1);}
   .install-banner .dismiss-btn{color:var(--dim);border:none;padding:8px;}
+
+  .coming-soon{position:fixed;inset:0;background:var(--bg);z-index:2000;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;text-align:center;}
+  .coming-soon .brand{font-size:15px;letter-spacing:3px;color:var(--dim);margin-bottom:18px;}
+  .coming-soon h1{font-size:clamp(28px,6vw,48px);font-weight:700;margin:0 0 14px;letter-spacing:1px;}
+  .coming-soon .tagline{max-width:520px;font-size:14.5px;color:var(--text);line-height:1.7;margin-bottom:8px;}
+  .coming-soon .desc{max-width:560px;font-size:12.5px;color:var(--dim);line-height:1.7;margin-bottom:34px;}
+  .countdown-row{display:flex;gap:14px;margin-bottom:22px;}
+  .countdown-unit{border:1px solid var(--line);padding:14px 18px;min-width:76px;}
+  .countdown-unit .num{font-size:clamp(24px,5vw,34px);font-weight:700;color:var(--amber);}
+  .countdown-unit .lbl{font-size:10px;color:var(--dim);letter-spacing:1.5px;margin-top:4px;}
+  .coming-soon .launch-line{font-size:11.5px;color:var(--dim);}
 </style>
 </head>
 <body>
 
+<div class="coming-soon" id="comingSoon">
+  <div class="brand mono">ETHCORPUS</div>
+  <h1>The signal is coming.</h1>
+  <p class="tagline">A live ETH analysis engine that combines technical patterns, on-chain whale flow, sentiment, and market context into one honest signal — then grades its own accuracy in the open, 24/7.</p>
+  <p class="desc">Live data and historical patterns, laid out side by side so you can actually see them — not just numbers, but what happened last time this setup showed up. Built for day traders and swing traders who want to make the call with real context, not a guess.</p>
+  <div class="countdown-row mono">
+    <div class="countdown-unit"><div class="num" id="cdDays">00</div><div class="lbl">DAYS</div></div>
+    <div class="countdown-unit"><div class="num" id="cdHours">00</div><div class="lbl">HOURS</div></div>
+    <div class="countdown-unit"><div class="num" id="cdMins">00</div><div class="lbl">MINS</div></div>
+    <div class="countdown-unit"><div class="num" id="cdSecs">00</div><div class="lbl">SECS</div></div>
+  </div>
+  <div class="launch-line mono">Launching 27 September 2026 · 06:10 (UK time)</div>
+  <div class="launch-line mono" style="margin-top:8px;color:var(--amber);">Free at launch. The early traders using it now won't be paying later.</div>
+</div>
+
+<div id="mainContent" style="display:none;">
 <div class="wrap">
   <div class="topbar">
     <div>
@@ -196,6 +223,7 @@
     The verdict above reflects the current composite signal, not a guarantee. Pattern matches show what happened after similar historical price shapes in the available data — a base rate for context, not a prediction of what will happen this time. Refreshes every 60 seconds. Not financial advice.
   </div>
 </div>
+</div>
 
 <div class="install-banner" id="installBanner">
   <div class="msg" id="installMsg">Get <b>faster access</b> — install this as an app on your device.</div>
@@ -208,6 +236,33 @@
 <script>
 const SUPABASE_URL = 'https://bvqkgaciwzyxmvqhwaaj.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_0n2vH5-f2AhQiusPHwXD-w_2Gbh_9vu';
+
+// ---------- launch countdown gate ----------
+const LAUNCH_TIME = new Date('2026-09-27T06:10:00+01:00').getTime(); // UK time (BST)
+
+function checkLaunch(){
+  const params = new URLSearchParams(window.location.search);
+  const preview = params.get('preview') === 'true';
+  const launched = Date.now() >= LAUNCH_TIME || preview;
+  document.getElementById('comingSoon').style.display = launched ? 'none' : 'flex';
+  document.getElementById('mainContent').style.display = launched ? 'block' : 'none';
+  return launched;
+}
+
+function updateCountdown(){
+  if(checkLaunch()) return;
+  const diff = Math.max(0, LAUNCH_TIME - Date.now());
+  const days = Math.floor(diff/86400000);
+  const hours = Math.floor((diff%86400000)/3600000);
+  const mins = Math.floor((diff%3600000)/60000);
+  const secs = Math.floor((diff%60000)/1000);
+  document.getElementById('cdDays').textContent = String(days).padStart(2,'0');
+  document.getElementById('cdHours').textContent = String(hours).padStart(2,'0');
+  document.getElementById('cdMins').textContent = String(mins).padStart(2,'0');
+  document.getElementById('cdSecs').textContent = String(secs).padStart(2,'0');
+}
+updateCountdown();
+setInterval(updateCountdown, 1000);
 
 const MODE_HORIZON_LABELS = {
   swing: [['h1','1h'],['h24','24h'],['d7','7d']],
