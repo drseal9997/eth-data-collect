@@ -1,6 +1,6 @@
 {
-  "name": "ETH Signal Terminal",
-  "short_name": "ETH Signal",
+  "name": "EthCorpus",
+  "short_name": "EthCorpus",
   "description": "Live ETH signal dashboard — analytics only, not financial advice.",
   "start_url": "./index.html",
   "display": "standalone",
