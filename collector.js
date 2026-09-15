@@ -37,12 +37,17 @@ async function supaGet(mode){
   const res = await fetch(`${SUPABASE_URL}/rest/v1/signal_state?mode=eq.${mode}&select=state`, {
     headers:{ apikey:SUPABASE_KEY, Authorization:`Bearer ${SUPABASE_KEY}` }
   });
+  if(!res.ok){
+    const body = await res.text();
+    console.error(`Supabase GET failed for mode=${mode}: ${res.status} ${res.statusText} — ${body}`);
+    return null;
+  }
   const rows = await res.json();
   return Array.isArray(rows) && rows.length ? rows[0].state : null;
 }
 
 async function supaSet(mode, state){
-  await fetch(`${SUPABASE_URL}/rest/v1/signal_state?on_conflict=mode`, {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/signal_state?on_conflict=mode`, {
     method:'POST',
     headers:{
       apikey:SUPABASE_KEY, Authorization:`Bearer ${SUPABASE_KEY}`,
@@ -50,6 +55,11 @@ async function supaSet(mode, state){
     },
     body: JSON.stringify([{ mode, state, updated_at: new Date().toISOString() }])
   });
+  if(!res.ok){
+    const body = await res.text();
+    console.error(`Supabase WRITE failed for mode=${mode}: ${res.status} ${res.statusText} — ${body}`);
+    throw new Error(`Supabase write failed (${res.status})`);
+  }
 }
 
 async function loadShared(){
