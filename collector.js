@@ -200,10 +200,12 @@ function computeComposite(techScore, whaleScore, sentScore, contextScore, weight
   if(activeCount>=3) q += confluenceOk?0.05:-0.35;
   q += 0.15*(mtfMultiplier-1);
   q = Math.max(0.3, Math.min(1.4, q));
-  const adjusted = Math.max(-1, Math.min(1, rawComposite*q));
+  let adjusted = rawComposite*q;
+  adjusted = Number.isFinite(adjusted) ? Math.max(-1, Math.min(1, adjusted)) : 0;
   let signal='HOLD';
   if(adjusted>0.15) signal='BUY'; else if(adjusted<-0.15) signal='SHORT';
-  const confidence = Math.min(99, Math.round(Math.abs(adjusted)*100));
+  let confidence = Math.min(99, Math.round(Math.abs(adjusted)*100));
+  if(!Number.isFinite(confidence)) confidence = 0;
   return { composite:adjusted, signal, confidence, confluenceOk };
 }
 
