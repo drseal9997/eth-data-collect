@@ -368,7 +368,7 @@ Swing factor weights: technical ${Math.round(swingState.weights.tech*100)}%, wha
 Sentiment: ${shared.lastSentiment ? `score ${shared.lastSentiment.score} — "${shared.lastSentiment.summary}"` : 'not available'}
 Market context: Fear & Greed ${shared.lastFearGreed ? `${shared.lastFearGreed.value} (${shared.lastFearGreed.classification})` : 'n/a'}${shared.lastFundingRate!=null ? `, funding rate ${shared.lastFundingRate}` : ''}
 
-Write a short, independent, plain-English take (2-4 sentences) on what's going on right now, in a calm analyst tone — no hype, no guaranteed predictions. If the swing and day-trade signals disagree, mention that explicitly, since it's meaningful. Respond with ONLY a JSON object, no markdown fences, no other text: {"text": "<your 2-4 sentence commentary>"}`;
+Write a short, independent, plain-English take (2-4 sentences) on what's going on right now. Tone: measured and balanced — like an experienced analyst who isn't trying to sell excitement or alarm either way. Don't lead with caution or hedge everything; state what the data actually shows plainly and let it speak for itself. If the swing and day-trade signals disagree, mention it as a neutral, useful fact (different timeframes naturally diverge sometimes) — not as a red flag or reason for concern. Avoid hype language, but also avoid sounding pessimistic or overly cautious by default. Respond with ONLY a JSON object, no markdown fences, no other text: {"text": "<your 2-4 sentence commentary>"}`;
 
   const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/interactions?key=${apiKey}`, {
     method:'POST',
