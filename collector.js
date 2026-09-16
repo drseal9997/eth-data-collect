@@ -203,9 +203,14 @@ async function fetchSentiment(){
 // on free-tier accounts. Instead we score sentiment from headlines we already fetch
 // for free, which keeps this path genuinely no-cost.
 async function fetchHeadlinesForSentiment(){
-  const res = await fetch('https://min-api.cryptocompare.com/data/v2/news/?categories=ETH&excludeCategories=Sponsored&lang=EN');
+  const res = await fetch('https://min-api.cryptocompare.com/data/v2/news/?categories=ETH&excludeCategories=Sponsored&lang=EN', {
+    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; EthCorpusCollector/1.0)' }
+  });
+  if(!res.ok) throw new Error('cryptocompare fetch failed: '+res.status);
   const data = await res.json();
-  if(!data.Data) return [];
+  if(!Array.isArray(data.Data)){
+    throw new Error('cryptocompare response invalid: '+JSON.stringify(data).slice(0,200));
+  }
   return data.Data.slice(0,10).map(a=>a.title);
 }
 
