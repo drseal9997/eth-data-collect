@@ -6,6 +6,7 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const ETHERSCAN_KEY = process.env.ETHERSCAN_KEY || null;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || null;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || null;
 
 const LEARNING_RATE = 0.04;
 const CAL_DECAY = 0.98;
@@ -180,6 +181,38 @@ async function fetchSentiment(){
   return jsonMatch ? JSON.parse(jsonMatch[0]) : null;
 }
 
+// ---------- free sentiment path: Gemini + free CryptoCompare headlines ----------
+// Deliberately avoids Gemini's google_search tool, which is billed per query even
+// on free-tier accounts. Instead we score sentiment from headlines we already fetch
+// for free, which keeps this path genuinely no-cost.
+async function fetchHeadlinesForSentiment(){
+  const res = await fetch('https://min-api.cryptocompare.com/data/v2/news/?categories=ETH&excludeCategories=Sponsored&lang=EN');
+  const data = await res.json();
+  if(!data.Data) return [];
+  return data.Data.slice(0,10).map(a=>a.title);
+}
+
+async function fetchSentimentGemini(apiKey){
+  const headlines = await fetchHeadlinesForSentiment();
+  if(!headlines.length) return null;
+  const headlineText = headlines.map(t=>`- ${t}`).join('\n');
+  const prompt = `Here are recent Ethereum (ETH) news headlines:\n${headlineText}\n\nBased only on these headlines, respond with ONLY a JSON object, no markdown fences, no other text: {"score": <number from -1 (very bearish) to 1 (very bullish)>, "summary": "<one sentence, under 20 words>"}`;
+
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/interactions?key=${apiKey}`, {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ model:'gemini-3.1-flash-lite', input: prompt })
+  });
+  if(!res.ok){ const t = await res.text(); throw new Error(`Gemini error ${res.status}: ${t}`); }
+  const data = await res.json();
+  const lastStep = data.steps[data.steps.length-1];
+  const textPart = (lastStep.content || []).find(c=>c.type==='text');
+  if(!textPart) return null;
+  const clean = textPart.text.replace(/```json|```/g,'').trim();
+  const match = clean.match(/\{[\s\S]*\}/);
+  return match ? JSON.parse(match[0]) : null;
+}
+
 function checkConfluence(t,w,s,c){
   const scores=[t,w,s,c].filter(x=>x!==null&&x!==undefined);
   if(scores.length<2) return true;
@@ -308,11 +341,16 @@ async function main(){
       shared.lastWhaleScore = flow.score; shared.lastWhaleCheckTs = now;
     }catch(e){ console.error('whale check failed', e.message); }
   }
-  if(ANTHROPIC_API_KEY && (!shared.lastSentimentCheckTs || now-shared.lastSentimentCheckTs>4*3600000)){
+  if(GEMINI_API_KEY && (!shared.lastSentimentCheckTs || now-shared.lastSentimentCheckTs>4*3600000)){
+    try{
+      const result = await fetchSentimentGemini(GEMINI_API_KEY);
+      if(result){ shared.lastSentiment = result; shared.lastSentimentCheckTs = now; }
+    }catch(e){ console.error('sentiment check failed (gemini)', e.message); }
+  } else if(ANTHROPIC_API_KEY && (!shared.lastSentimentCheckTs || now-shared.lastSentimentCheckTs>4*3600000)){
     try{
       const result = await fetchSentiment();
       if(result){ shared.lastSentiment = result; shared.lastSentimentCheckTs = now; }
-    }catch(e){ console.error('sentiment check failed', e.message); }
+    }catch(e){ console.error('sentiment check failed (anthropic)', e.message); }
   }
   if(!shared.lastContextCheckTs || now-shared.lastContextCheckTs>10*60000){
     try{
