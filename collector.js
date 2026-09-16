@@ -154,12 +154,29 @@ async function fetchMarketContext(){
     fetch('https://api.alternative.me/fng/?limit=1'),
     fetch('https://fapi.binance.com/fapi/v1/premiumIndex?symbol=ETHUSDT')
   ]);
-  const fgData=await fgRes.json(); const fundingData=await fundingRes.json();
-  const fgValue=Number(fgData.data[0].value); const fgClass=fgData.data[0].value_classification;
-  const fundingRate=Number(fundingData.lastFundingRate);
-  const fgScore=Math.max(-1,Math.min(1,(50-fgValue)/50));
-  const fundingScore=Math.max(-1,Math.min(1,-(fundingRate/0.001)));
-  return { contextScore:(fgScore+fundingScore)/2, fgValue, fgClass, fundingRate };
+  if(!fgRes.ok) throw new Error('fear/greed fetch failed: '+fgRes.status);
+  const fgData = await fgRes.json();
+  const fgValue = Number(fgData.data[0].value);
+  const fgClass = fgData.data[0].value_classification;
+  if(!Number.isFinite(fgValue)) throw new Error('fear/greed value invalid');
+  const fgScore = Math.max(-1, Math.min(1, (50-fgValue)/50));
+
+  let fundingRate = null, fundingScore = 0;
+  if(fundingRes.ok){
+    const fundingData = await fundingRes.json();
+    const parsedRate = Number(fundingData.lastFundingRate);
+    if(Number.isFinite(parsedRate)){
+      fundingRate = parsedRate;
+      fundingScore = Math.max(-1, Math.min(1, -(fundingRate/0.001)));
+    } else {
+      console.error('funding rate response invalid:', JSON.stringify(fundingData).slice(0,200));
+    }
+  } else {
+    console.error('funding rate fetch failed:', fundingRes.status);
+  }
+
+  const contextScore = fundingRate!==null ? (fgScore+fundingScore)/2 : fgScore;
+  return { contextScore, fgValue, fgClass, fundingRate };
 }
 
 async function fetchSentiment(){
@@ -344,8 +361,8 @@ async function main(){
   if(GEMINI_API_KEY && (!shared.lastSentimentCheckTs || now-shared.lastSentimentCheckTs>4*3600000)){
     try{
       const result = await fetchSentimentGemini(GEMINI_API_KEY);
-      if(result){ shared.lastSentiment = result; shared.lastSentimentCheckTs = now; }
-    }catch(e){ console.error('sentiment check failed (gemini)', e.message); }
+      if(result){ shared.lastSentiment = result; shared.lastSentimentCheckTs = now; shared.lastSentimentError = null; }
+    }catch(e){ console.error('sentiment check failed (gemini)', e.message); shared.lastSentimentError = String(e.message).slice(0,300); }
   } else if(ANTHROPIC_API_KEY && (!shared.lastSentimentCheckTs || now-shared.lastSentimentCheckTs>4*3600000)){
     try{
       const result = await fetchSentiment();
