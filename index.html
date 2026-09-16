@@ -181,6 +181,7 @@
     <div class="cell">
       <div class="label">Sentiment</div><div class="val mono" id="wSent">—</div>
       <div class="desc">Recent news and social media mood around ETH.</div>
+      <div class="desc" id="sentLive" style="margin-top:6px;color:var(--text);"></div>
     </div>
     <div class="cell">
       <div class="label">Market context</div><div class="val mono" id="wContext">—</div>
@@ -712,12 +713,20 @@ function renderLogAndWeights(state, mode){
 async function refresh(){
   try{
     const state = await fetchModeState(currentMode);
+    const shared = await fetchModeState('shared');
     const log = (state && state.log) || [];
     const latest = [...log].sort((a,b)=>b.ts-a.ts)[0] || null;
 
     renderVerdict(latest, currentMode);
     if(state && state.priceCache) renderAnalogs(state.priceCache, currentMode, latest?latest.signal:null, latest?latest.confidence:null);
     renderLogAndWeights(state, currentMode);
+
+    const sentLiveEl = document.getElementById('sentLive');
+    if(shared && shared.lastSentiment){
+      sentLiveEl.textContent = `${shared.lastSentiment.score>0?'+':''}${shared.lastSentiment.score} — "${shared.lastSentiment.summary}"`;
+    } else {
+      sentLiveEl.textContent = 'Not checked yet.';
+    }
 
     document.getElementById('lastUpdated').textContent = 'Page refreshed ' + new Date().toLocaleTimeString();
   }catch(e){
