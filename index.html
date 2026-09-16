@@ -48,6 +48,7 @@
   .weights .val{font-size:18px;font-weight:600;}
   .weights .desc{color:var(--dim);font-size:10.5px;line-height:1.45;margin-top:6px;}
   .weights-note{color:var(--dim);font-size:11px;margin-bottom:22px;line-height:1.5;}
+  .ai-ts{color:var(--dim);font-size:11px;}
 
   .section-head{display:flex;justify-content:space-between;align-items:baseline;margin:26px 0 10px;}
   .section-head h2{font-size:14px;font-weight:600;margin:0;}
@@ -189,6 +190,12 @@
     </div>
   </div>
   <div class="weights-note">These percentages show how much each factor currently influences the signal above — they adjust automatically over time based on which factors have actually been right most often.</div>
+
+  <div class="section-head">
+    <h2>AI take</h2>
+    <span class="ai-ts" id="aiCommentaryTs"></span>
+  </div>
+  <div class="pattern-summary" id="aiCommentaryText">Not generated yet.</div>
 
   <div class="section-head">
     <h2>Historical pattern match</h2>
@@ -726,6 +733,15 @@ async function refresh(){
       sentLiveEl.textContent = `${shared.lastSentiment.score>0?'+':''}${shared.lastSentiment.score} — "${shared.lastSentiment.summary}"`;
     } else {
       sentLiveEl.textContent = 'Not checked yet.';
+    }
+
+    const aiTextEl = document.getElementById('aiCommentaryText');
+    const aiTsEl = document.getElementById('aiCommentaryTs');
+    if(shared && shared.aiCommentary){
+      aiTextEl.textContent = shared.aiCommentary;
+      aiTsEl.textContent = shared.lastAICommentaryTs ? 'as of ' + new Date(shared.lastAICommentaryTs).toLocaleString() : '';
+    } else {
+      aiTextEl.textContent = 'Not generated yet.';
     }
 
     document.getElementById('lastUpdated').textContent = 'Page refreshed ' + new Date().toLocaleTimeString();
