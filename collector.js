@@ -354,6 +354,35 @@ async function runMode(mode, shared){
 
   await supaSet(mode, modeState);
   console.log(`[${mode}] price=$${ind.latestPrice.toFixed(2)} signal=${comp.signal} confidence=${comp.confidence}%`);
+  return modeState;
+}
+
+async function fetchAICommentary(apiKey, swingState, dayState, shared){
+  const swingLatest = [...(swingState.log||[])].sort((a,b)=>b.ts-a.ts)[0];
+  const dayLatest = [...(dayState.log||[])].sort((a,b)=>b.ts-a.ts)[0];
+  const prompt = `You are an independent market commentator reviewing a live ETH trading-signal system. Current state:
+
+Swing signal (hours-to-days horizon): ${swingLatest ? `${swingLatest.signal} at ${swingLatest.confidence}% confidence, price $${swingLatest.price.toFixed(2)}` : 'no data yet'}
+Day-trade signal (minutes-to-hours horizon): ${dayLatest ? `${dayLatest.signal} at ${dayLatest.confidence}% confidence, price $${dayLatest.price.toFixed(2)}` : 'no data yet'}
+Swing factor weights: technical ${Math.round(swingState.weights.tech*100)}%, whale ${Math.round(swingState.weights.whale*100)}%, sentiment ${Math.round(swingState.weights.sentiment*100)}%, context ${Math.round(swingState.weights.context*100)}%
+Sentiment: ${shared.lastSentiment ? `score ${shared.lastSentiment.score} — "${shared.lastSentiment.summary}"` : 'not available'}
+Market context: Fear & Greed ${shared.lastFearGreed ? `${shared.lastFearGreed.value} (${shared.lastFearGreed.classification})` : 'n/a'}${shared.lastFundingRate!=null ? `, funding rate ${shared.lastFundingRate}` : ''}
+
+Write a short, independent, plain-English take (2-4 sentences) on what's going on right now, in a calm analyst tone — no hype, no guaranteed predictions. If the swing and day-trade signals disagree, mention that explicitly, since it's meaningful. Respond with ONLY a JSON object, no markdown fences, no other text: {"text": "<your 2-4 sentence commentary>"}`;
+
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/interactions?key=${apiKey}`, {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ model:'gemini-3.1-flash-lite', input: prompt })
+  });
+  if(!res.ok){ const t = await res.text(); throw new Error(`Gemini error ${res.status}: ${t}`); }
+  const data = await res.json();
+  const lastStep = data.steps[data.steps.length-1];
+  const textPart = (lastStep.content || []).find(c=>c.type==='text');
+  if(!textPart) return null;
+  const clean = textPart.text.replace(/```json|```/g,'').trim();
+  const match = clean.match(/\{[\s\S]*\}/);
+  return match ? JSON.parse(match[0]) : null;
 }
 
 async function main(){
@@ -388,8 +417,23 @@ async function main(){
   }
   await saveShared(shared);
 
-  await runMode('swing', shared);
-  await runMode('day', shared);
+  const swingState = await runMode('swing', shared);
+  const dayState = await runMode('day', shared);
+
+  if(GEMINI_API_KEY && (!shared.lastAICommentaryTs || now-shared.lastAICommentaryTs>3600000)){
+    try{
+      const commentary = await fetchAICommentary(GEMINI_API_KEY, swingState, dayState, shared);
+      if(commentary && commentary.text){
+        shared.aiCommentary = commentary.text;
+        shared.lastAICommentaryTs = now;
+        shared.aiCommentaryError = null;
+      }
+    }catch(e){
+      console.error('ai commentary failed', e.message);
+      shared.aiCommentaryError = String(e.message).slice(0,300);
+    }
+    await saveShared(shared);
+  }
 }
 
 main().catch(e=>{ console.error(e); process.exit(1); });
