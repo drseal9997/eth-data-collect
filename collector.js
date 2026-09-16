@@ -201,17 +201,22 @@ async function fetchSentiment(){
 // ---------- free sentiment path: Gemini + free CryptoCompare headlines ----------
 // Deliberately avoids Gemini's google_search tool, which is billed per query even
 // on free-tier accounts. Instead we score sentiment from headlines we already fetch
-// for free, which keeps this path genuinely no-cost.
+// for free from a public RSS feed — no API key, no signup, no auth needed at all.
+
 async function fetchHeadlinesForSentiment(){
-  const res = await fetch('https://min-api.cryptocompare.com/data/v2/news/?categories=ETH&excludeCategories=Sponsored&lang=EN', {
+  const res = await fetch('https://cointelegraph.com/rss/tag/ethereum', {
     headers: { 'User-Agent': 'Mozilla/5.0 (compatible; EthCorpusCollector/1.0)' }
   });
-  if(!res.ok) throw new Error('cryptocompare fetch failed: '+res.status);
-  const data = await res.json();
-  if(!Array.isArray(data.Data)){
-    throw new Error('cryptocompare response invalid: '+JSON.stringify(data).slice(0,200));
-  }
-  return data.Data.slice(0,10).map(a=>a.title);
+  if(!res.ok) throw new Error('rss fetch failed: '+res.status);
+  const xml = await res.text();
+  const itemBlocks = xml.match(/<item>[\s\S]*?<\/item>/g) || [];
+  const titles = itemBlocks.slice(0,10).map(block=>{
+    const m = block.match(/<title>([\s\S]*?)<\/title>/);
+    if(!m) return null;
+    return m[1].replace('<![CDATA[','').replace(']]>','').trim();
+  }).filter(Boolean);
+  if(!titles.length) throw new Error('rss parse yielded no titles');
+  return titles;
 }
 
 async function fetchSentimentGemini(apiKey){
