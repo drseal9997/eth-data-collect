@@ -11,6 +11,9 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY || null;
 const LEARNING_RATE = 0.04;
 const CAL_DECAY = 0.98;
 const CAL_BUCKETS = [[0,20],[20,40],[40,60],[60,80],[80,101]];
+// Minimum decayed sample count a calibration bucket needs before its observed
+// accuracy is trusted enough to override the raw composite-score confidence.
+const CAL_MIN_SAMPLES = 10;
 
 const MODE_CONFIGS = {
   swing: {
@@ -279,12 +282,27 @@ function judgeOutcome(entry, priceThen){
   const ret=(priceThen-entry.price)/entry.price;
   const actualDir = Math.abs(ret)<0.005?0:Math.sign(ret);
   const sigDir = entry.signal==='BUY'?1:entry.signal==='SHORT'?-1:0;
-  return { outcome:(sigDir===actualDir||sigDir===0)?'correct':'wrong', actualDir };
+  // A HOLD (sigDir===0) is only "correct" when price genuinely stayed flat
+  // (actualDir===0, the same deadzone used for BUY/SHORT) — it is graded wrong
+  // if price moved significantly in either direction after a HOLD call.
+  return { outcome: sigDir===actualDir ? 'correct' : 'wrong', actualDir };
 }
 function updateCalibration(modeState, confidence, wasCorrect){
   const b = modeState.calibration.find(x=>confidence>=x.min && confidence<x.max);
   if(!b) return;
   b.total = b.total*CAL_DECAY+1; b.correct = b.correct*CAL_DECAY+(wasCorrect?1:0);
+}
+
+// Maps a raw composite-score-derived confidence to the bucket's observed
+// (decayed) accuracy, once that bucket has enough samples to be trustworthy.
+// Falls back to the raw value otherwise (e.g. buckets still warming up).
+function getCalibratedConfidence(modeState, rawConfidence){
+  const buckets = modeState && modeState.calibration;
+  if(!Array.isArray(buckets) || !Number.isFinite(rawConfidence)) return rawConfidence;
+  const b = buckets.find(x=>rawConfidence>=x.min && rawConfidence<x.max);
+  if(!b || b.total < CAL_MIN_SAMPLES) return rawConfidence;
+  const empirical = Math.round((b.correct/b.total)*100);
+  return Math.max(0, Math.min(99, empirical));
 }
 function gradeSignals(modeState, cfg, now){
   const primaryKey = cfg.horizons[cfg.primaryHorizonIndex][0];
@@ -345,15 +363,19 @@ async function runMode(mode, shared){
 
   const now = Date.now();
   const logIntervalMs = cfg.logIntervalMin*60000;
+  const calibratedConfidence = getCalibratedConfidence(modeState, comp.confidence);
   if(!modeState.lastLogTs || (now-modeState.lastLogTs)>=logIntervalMs){
     const horizonsObj={}; cfg.horizons.forEach(([k])=>horizonsObj[k]={graded:false,outcome:null});
-    modeState.log.push({ ts:now, price:ind.latestPrice, techScore:ind.rawScore, whaleScore, sentimentScore:sentScore, contextScore, signal:comp.signal, confidence:comp.confidence, horizons:horizonsObj });
+    // `confidence` stays the raw composite-score value — it's what calibration
+    // buckets are keyed on, so it must not itself be calibrated. `calibratedConfidence`
+    // is the display-facing number once its bucket has enough samples to trust.
+    modeState.log.push({ ts:now, price:ind.latestPrice, techScore:ind.rawScore, whaleScore, sentimentScore:sentScore, contextScore, signal:comp.signal, confidence:comp.confidence, calibratedConfidence, horizons:horizonsObj });
     modeState.lastLogTs = now;
     if(modeState.log.length>2000) modeState.log = modeState.log.slice(-2000);
   }
 
   await supaSet(mode, modeState);
-  console.log(`[${mode}] price=$${ind.latestPrice.toFixed(2)} signal=${comp.signal} confidence=${comp.confidence}%`);
+  console.log(`[${mode}] price=$${ind.latestPrice.toFixed(2)} signal=${comp.signal} confidence=${comp.confidence}% (calibrated ${calibratedConfidence}%)`);
   return modeState;
 }
 

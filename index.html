@@ -529,7 +529,10 @@ function renderVerdict(latest, mode){
     return;
   }
 
-  const conf = (latest.confidence!=null && Number.isFinite(latest.confidence)) ? latest.confidence : 0;
+  const rawConf = (latest.confidence!=null && Number.isFinite(latest.confidence)) ? latest.confidence : 0;
+  // Prefer the calibrated confidence (bucket's observed accuracy) once it's available;
+  // it falls back to the raw value itself until a bucket has enough graded samples.
+  const conf = (latest.calibratedConfidence!=null && Number.isFinite(latest.calibratedConfidence)) ? latest.calibratedConfidence : rawConf;
   let cls, label, message;
   if(latest.signal==='BUY'){
     cls='buy'; label='FAVORS BUYING';
@@ -545,7 +548,8 @@ function renderVerdict(latest, mode){
   word.className = 'verdict-word '+cls+' mono';
   word.textContent = label;
   sub.textContent = message;
-  meta.textContent = `Confidence: ${conf}% · as of ${new Date(latest.ts).toLocaleString()}`;
+  const rawSuffix = rawConf !== conf ? ` (raw ${rawConf}%)` : '';
+  meta.textContent = `Confidence: ${conf}%${rawSuffix} · as of ${new Date(latest.ts).toLocaleString()}`;
   price.innerHTML = `ETH <b>$${latest.price.toFixed(2)}</b>`;
 }
 
@@ -696,11 +700,19 @@ function renderLogAndWeights(state, mode){
     body.innerHTML = sorted.slice(0,30).map(e=>{
       const h = e.horizons || {};
       const cells = horizons.map(([key])=>`<td>${badgeFor(h[key])}</td>`).join('');
+      const rawC = (e.confidence!=null && Number.isFinite(e.confidence)) ? e.confidence : null;
+      // Calibrated confidence (observed bucket accuracy) is the primary number shown;
+      // raw falls back as the display value until calibration kicks in, and is kept
+      // as a smaller secondary detail whenever it differs from the calibrated one.
+      const calC = (e.calibratedConfidence!=null && Number.isFinite(e.calibratedConfidence)) ? e.calibratedConfidence : rawC;
+      const confCell = calC!=null
+        ? `${calC}%` + (rawC!=null && rawC!==calC ? `<div style="color:var(--dim);font-size:9.5px;">raw ${rawC}%</div>` : '')
+        : '—';
       return `<tr>
         <td class="mono">${new Date(e.ts).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</td>
         <td class="mono">$${e.price.toFixed(2)}</td>
         <td class="mono">${e.signal}</td>
-        <td class="mono">${e.confidence!=null && Number.isFinite(e.confidence) ? e.confidence : '—'}%</td>
+        <td class="mono">${confCell}</td>
         ${cells}
       </tr>`;
     }).join('');
@@ -725,7 +737,13 @@ async function refresh(){
     const latest = [...log].sort((a,b)=>b.ts-a.ts)[0] || null;
 
     renderVerdict(latest, currentMode);
-    if(state && state.priceCache) renderAnalogs(state.priceCache, currentMode, latest?latest.signal:null, latest?latest.confidence:null);
+    // Use the calibrated confidence here too, so the "combined confidence" blend
+    // on the pattern-match panel is built from the same trustworthy number shown
+    // in the verdict box above, not the raw uncalibrated score.
+    const latestConfForBlend = latest
+      ? ((latest.calibratedConfidence!=null && Number.isFinite(latest.calibratedConfidence)) ? latest.calibratedConfidence : latest.confidence)
+      : null;
+    if(state && state.priceCache) renderAnalogs(state.priceCache, currentMode, latest?latest.signal:null, latestConfForBlend);
     renderLogAndWeights(state, currentMode);
 
     const sentLiveEl = document.getElementById('sentLive');
