@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Changelog — EthCorpus</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0D0F14">
+<link rel="icon" href="icon-192.png">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+  :root{ --bg:#0D0F14; --panel:#161A22; --line:#2A2F3A; --text:#E4E6EB; --dim:#8A93A6; --bull:#4EA672; --bear:#B4472E; --amber:#D9A441; }
+  *{box-sizing:border-box;}
+  body{margin:0; background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans-serif;}
+  .mono{font-family:'IBM Plex Mono',monospace;}
+  .wrap{max-width:760px;margin:0 auto;padding:28px 20px 60px;}
+  .topbar{border-bottom:1px solid var(--line); padding-bottom:16px; margin-bottom:16px;}
+  h1{font-size:19px;font-weight:600;margin:0;}
+  .sub{color:var(--dim);font-size:12.5px;margin-top:4px;}
+  .site-nav{font-size:12px;margin-bottom:26px;}
+  .site-nav a{color:var(--dim);text-decoration:none;}
+  .site-nav a:hover{color:var(--amber);}
+  .site-nav .sep{color:var(--line);margin:0 8px;}
+  .site-nav a.current{color:var(--amber);}
+
+  /* ---- Each dated entry follows this exact pattern. To add a new one, copy an
+     <section class="entry"> block, put it FIRST (changelog is newest-first),
+     update the date and bullet list. ---- */
+  .entry{border:1px solid var(--line);padding:16px 18px;margin-bottom:14px;}
+  .entry .date{color:var(--amber);font-weight:600;font-size:13px;margin-bottom:10px;}
+  .entry ul{margin:0;padding-left:20px;line-height:1.7;font-size:13px;}
+  .entry li{margin-bottom:4px;}
+  .intro{color:var(--dim);font-size:12.5px;line-height:1.6;margin-bottom:24px;}
+
+  .coming-soon{position:fixed;inset:0;background:var(--bg);z-index:2000;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;text-align:center;}
+  .coming-soon .brand{font-size:15px;letter-spacing:3px;color:var(--dim);margin-bottom:18px;}
+  .coming-soon h1{font-size:clamp(24px,5vw,36px);font-weight:700;margin:0 0 14px;}
+  .coming-soon .tagline{max-width:480px;font-size:13.5px;color:var(--dim);line-height:1.7;}
+  .coming-soon a{color:var(--amber);}
+</style>
+</head>
+<body>
+
+<div class="coming-soon" id="comingSoon">
+  <div class="brand mono">ETHCORPUS</div>
+  <h1>The signal is coming.</h1>
+  <p class="tagline">This page will be live when EthCorpus launches on 27 September 2026. <a href="index.html">Back to the countdown</a>.</p>
+</div>
+
+<div id="mainContent" style="display:none;">
+<div class="wrap">
+  <div class="topbar">
+    <h1>ETHCORPUS</h1>
+    <div class="sub">Changelog</div>
+  </div>
+  <div class="site-nav mono">
+    <a href="index.html">Dashboard</a>
+    <span class="sep">·</span>
+    <a href="track-record.html">Track record</a>
+    <span class="sep">·</span>
+    <a href="methodology.html">Methodology</a>
+    <span class="sep">·</span>
+    <a href="changelog.html" class="current">Changelog</a>
+  </div>
+
+  <p class="intro">What's changed, newest first.</p>
+
+  <div id="entries">
+
+  <section class="entry">
+    <div class="date mono">17 September 2026</div>
+    <ul>
+      <li>Added a <a href="track-record.html" style="color:var(--amber);">track record page</a>: total signals graded and overall win rate per mode, a confidence-bucket accuracy breakdown, and a clearly-labeled illustrative comparison of holding ETH vs. following every signal (with a mini equity curve chart).</li>
+      <li>Added a <a href="methodology.html" style="color:var(--amber);">methodology page</a> explaining the four scoring factors, how their weights adapt over time, what confidence/calibration mean, and what regime and confluence filtering do — written for a non-technical reader.</li>
+      <li>Added this changelog page.</li>
+      <li>Chart upgrades: signal markers on the price chart, a volume bar strip, an RSI/MACD strip, click-drag zoom with reset, a hover crosshair/tooltip, and individually toggleable SMA overlays.</li>
+      <li>Confidence shown on the dashboard is now calibrated against actual historical accuracy (once a confidence bucket has enough graded samples) instead of only the raw score, and HOLD signals are graded against what price actually did rather than always counted as correct.</li>
+    </ul>
+  </section>
+
+  </div>
+</div>
+</div>
+
+<script>
+const LAUNCH_TIME = new Date('2026-09-27T06:10:00+01:00').getTime();
+function checkLaunch(){
+  const params = new URLSearchParams(window.location.search);
+  const preview = params.get('preview') === 'true';
+  const launched = Date.now() >= LAUNCH_TIME || preview;
+  document.getElementById('comingSoon').style.display = launched ? 'none' : 'flex';
+  document.getElementById('mainContent').style.display = launched ? 'block' : 'none';
+}
+checkLaunch();
+</script>
+</body>
+</html>

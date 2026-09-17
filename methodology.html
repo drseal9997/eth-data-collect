@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Methodology — EthCorpus</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0D0F14">
+<link rel="icon" href="icon-192.png">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+  :root{ --bg:#0D0F14; --panel:#161A22; --line:#2A2F3A; --text:#E4E6EB; --dim:#8A93A6; --bull:#4EA672; --bear:#B4472E; --amber:#D9A441; }
+  *{box-sizing:border-box;}
+  body{margin:0; background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans-serif;}
+  .mono{font-family:'IBM Plex Mono',monospace;}
+  .wrap{max-width:760px;margin:0 auto;padding:28px 20px 60px;}
+  .topbar{border-bottom:1px solid var(--line); padding-bottom:16px; margin-bottom:16px;}
+  h1{font-size:19px;font-weight:600;margin:0;}
+  .sub{color:var(--dim);font-size:12.5px;margin-top:4px;}
+  .site-nav{font-size:12px;margin-bottom:26px;}
+  .site-nav a{color:var(--dim);text-decoration:none;}
+  .site-nav a:hover{color:var(--amber);}
+  .site-nav .sep{color:var(--line);margin:0 8px;}
+  .site-nav a.current{color:var(--amber);}
+
+  h2{font-size:16px;font-weight:600;margin:34px 0 10px;color:var(--amber);}
+  h2:first-of-type{margin-top:0;}
+  p{line-height:1.7;font-size:13.5px;color:var(--text);margin:0 0 12px;}
+  .card{border:1px solid var(--line);padding:14px 16px;margin-bottom:12px;}
+  .card .name{font-weight:600;margin-bottom:4px;}
+  .card .name .weight-hint{color:var(--dim);font-weight:400;font-size:12px;}
+  ul{padding-left:20px;line-height:1.7;font-size:13.5px;}
+  .note{color:var(--dim);font-size:12px;line-height:1.6;border-top:1px solid var(--line);padding-top:12px;margin-top:26px;}
+
+  .coming-soon{position:fixed;inset:0;background:var(--bg);z-index:2000;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;text-align:center;}
+  .coming-soon .brand{font-size:15px;letter-spacing:3px;color:var(--dim);margin-bottom:18px;}
+  .coming-soon h1{font-size:clamp(24px,5vw,36px);font-weight:700;margin:0 0 14px;}
+  .coming-soon .tagline{max-width:480px;font-size:13.5px;color:var(--dim);line-height:1.7;}
+  .coming-soon a{color:var(--amber);}
+</style>
+</head>
+<body>
+
+<div class="coming-soon" id="comingSoon">
+  <div class="brand mono">ETHCORPUS</div>
+  <h1>The signal is coming.</h1>
+  <p class="tagline">This page will be live when EthCorpus launches on 27 September 2026. <a href="index.html">Back to the countdown</a>.</p>
+</div>
+
+<div id="mainContent" style="display:none;">
+<div class="wrap">
+  <div class="topbar">
+    <h1>ETHCORPUS</h1>
+    <div class="sub">Methodology — how the signal actually works</div>
+  </div>
+  <div class="site-nav mono">
+    <a href="index.html">Dashboard</a>
+    <span class="sep">·</span>
+    <a href="track-record.html">Track record</a>
+    <span class="sep">·</span>
+    <a href="methodology.html" class="current">Methodology</a>
+    <span class="sep">·</span>
+    <a href="changelog.html">Changelog</a>
+  </div>
+
+  <p>This page explains, in plain English and with no assumed background, how EthCorpus turns raw data into a BUY / SHORT / HOLD call and a confidence percentage. Nothing here is hidden — this is genuinely how it works.</p>
+
+  <h2>The four ingredients</h2>
+  <p>Every few minutes, the system looks at four separate things and scores each one from "very bearish" to "very bullish." It then blends the four scores into one number, using a set of weights (percentages) that say how much to trust each ingredient right now. Those weights are the numbers you see on the dashboard under "Technical," "Whale flow," "Sentiment," and "Market context."</p>
+
+  <div class="card">
+    <div class="name">Technical <span class="weight-hint">— price patterns</span></div>
+    <p style="margin:0;">Looks at the recent shape of the price chart: is it trending up or down, is momentum speeding up or slowing down, and is the price overextended in either direction. This comes from standard tools traders have used for decades (moving averages, RSI, MACD) — nothing exotic, just applied automatically and continuously.</p>
+  </div>
+  <div class="card">
+    <div class="name">Whale flow <span class="weight-hint">— large wallet movement</span></div>
+    <p style="margin:0;">Watches a set of known large exchange wallets to see whether big holders ("whales") have recently been sending ETH <em>onto</em> exchanges (often a precursor to selling) or pulling it <em>off</em> exchanges (often a sign they intend to hold, which is read as bullish).</p>
+  </div>
+  <div class="card">
+    <div class="name">Sentiment <span class="weight-hint">— news and social mood</span></div>
+    <p style="margin:0;">Periodically reads a batch of recent ETH-related news headlines and asks an AI model to summarize whether the overall tone is bullish, bearish, or neutral, along with a one-line plain-English summary — which is shown live on the dashboard.</p>
+  </div>
+  <div class="card">
+    <div class="name">Market context <span class="weight-hint">— broader crypto mood</span></div>
+    <p style="margin:0;">Combines the well-known crypto "Fear &amp; Greed Index" with the futures funding rate (a measure of whether traders are crowding into leveraged long or short bets). Extreme readings in either direction are treated as a mild contrarian signal.</p>
+  </div>
+
+  <h2>How the weights adapt over time</h2>
+  <p>The percentages assigned to each of the four ingredients aren't fixed — they change automatically based on which ingredients have actually been right lately. Every time a past signal's outcome becomes knowable (i.e. enough time has passed to see what price actually did), the system checks whether each individual ingredient was pointing the right way. If an ingredient was right, its weight nudges up slightly; if it was wrong, its weight nudges down slightly. The weights always add back up to 100%.</p>
+  <p>This means if, say, whale flow has been a much better predictor than sentiment recently, whale flow's share of the final decision will gradually grow and sentiment's will shrink — without anyone manually re-tuning anything. It also means the mix you see today can look quite different in a few weeks if market conditions change.</p>
+
+  <h2>What "confidence" and calibration mean</h2>
+  <p>The confidence percentage is not a claim like "this will be right 70% of the time" by default — it starts out as a measure of how strong and how mutually agreeing the four ingredients are. A high confidence means the ingredients are pointing firmly the same direction; a low confidence means they're weak or conflicting.</p>
+  <p>Separately, the system keeps a scorecard of how often each confidence range (0-20%, 20-40%, and so on) has actually turned out correct — this is called <strong>calibration</strong>, and you can see the live numbers on the <a href="track-record.html" style="color:var(--amber);">track record page</a>. Once a confidence range has enough graded history behind it, the dashboard shows that range's real observed accuracy instead of the raw internal score — so if 80-100% confidence calls have only actually been right 60% of the time, the dashboard will show 60%, not 80%. The goal is that the number on screen means what it says.</p>
+
+  <h2>Regime and confluence filtering</h2>
+  <p>Two extra checks adjust the final signal up or down before it's shown:</p>
+  <ul>
+    <li><strong>Regime filtering</strong> asks: is the market actually trending right now, or is it flat and choppy? Technical signals tend to be less reliable in a directionless, low-volatility market, so the system quietly reduces its confidence when there's no real trend underway, and gives slightly more weight to its call when a clear trend is present.</li>
+    <li><strong>Confluence filtering</strong> asks: are at least two of the four ingredients agreeing with each other? If most ingredients agree, that's treated as a mild vote of confidence. If they're pulling in different directions, the system treats that disagreement as a warning sign and pulls its confidence down — even if the blended average still leans one way.</li>
+  </ul>
+
+  <h2>What this system doesn't do</h2>
+  <p>It doesn't guarantee future results, it isn't personalized financial advice, and it doesn't account for your own risk tolerance, fees, taxes, or timing. See the <a href="track-record.html" style="color:var(--amber);">track record page</a> for an honest, ongoing account of how accurate it has actually been, including a clearly-labeled illustrative comparison against simply holding ETH.</p>
+
+  <div class="note">Questions about anything on this page, or want more detail on a specific part? The dashboard's "AI take" and signal log are generated by the same pipeline described here — nothing runs separately from what's explained above.</div>
+</div>
+</div>
+
+<script>
+const LAUNCH_TIME = new Date('2026-09-27T06:10:00+01:00').getTime();
+function checkLaunch(){
+  const params = new URLSearchParams(window.location.search);
+  const preview = params.get('preview') === 'true';
+  const launched = Date.now() >= LAUNCH_TIME || preview;
+  document.getElementById('comingSoon').style.display = launched ? 'none' : 'flex';
+  document.getElementById('mainContent').style.display = launched ? 'block' : 'none';
+}
+checkLaunch();
+</script>
+</body>
+</html>

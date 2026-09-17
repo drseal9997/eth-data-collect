@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Track record — EthCorpus</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0D0F14">
+<link rel="icon" href="icon-192.png">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+  :root{ --bg:#0D0F14; --panel:#161A22; --line:#2A2F3A; --text:#E4E6EB; --dim:#8A93A6; --bull:#4EA672; --bear:#B4472E; --amber:#D9A441; }
+  *{box-sizing:border-box;}
+  body{margin:0; background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans-serif;}
+  .mono{font-family:'IBM Plex Mono',monospace;}
+  .wrap{max-width:900px;margin:0 auto;padding:28px 20px 60px;}
+  .topbar{display:flex; align-items:baseline; justify-content:space-between; border-bottom:1px solid var(--line); padding-bottom:16px; margin-bottom:16px; flex-wrap:wrap; gap:12px;}
+  h1{font-size:19px;font-weight:600;margin:0;}
+  .sub{color:var(--dim);font-size:12.5px;margin-top:4px;}
+  .site-nav{font-size:12px;margin-bottom:22px;}
+  .site-nav a{color:var(--dim);text-decoration:none;}
+  .site-nav a:hover{color:var(--amber);}
+  .site-nav .sep{color:var(--line);margin:0 8px;}
+  .site-nav a.current{color:var(--amber);}
+
+  h2{font-size:16px;font-weight:600;margin:0 0 4px;}
+  .mode-section{border:1px solid var(--line);padding:20px;margin-bottom:24px;}
+  .mode-section h2{color:var(--amber);}
+  .intro{color:var(--dim);font-size:12.5px;line-height:1.6;margin-bottom:26px;}
+
+  .stat-row{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin-bottom:18px;}
+  .stat-cell{border:1px solid var(--line);padding:14px;}
+  .stat-cell .label{color:var(--dim);font-size:11.5px;margin-bottom:4px;}
+  .stat-cell .val{font-size:22px;font-weight:600;}
+
+  table{width:100%;border-collapse:collapse;font-size:12.5px;margin-bottom:6px;}
+  th{text-align:left;color:var(--dim);font-weight:500;font-size:11px;border-bottom:1px solid var(--line);padding:7px 8px;}
+  td{padding:7px 8px;border-bottom:1px solid var(--line);}
+  .bucket-note{color:var(--dim);font-size:11px;line-height:1.6;margin-bottom:4px;}
+  .caveat{color:var(--dim);font-size:11px;line-height:1.6;margin-top:10px;padding-top:10px;border-top:1px solid var(--line);}
+  .equity-box{height:160px;margin-bottom:14px;}
+  .empty{color:var(--dim);font-size:12.5px;padding:10px 0;}
+
+  .coming-soon{position:fixed;inset:0;background:var(--bg);z-index:2000;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;text-align:center;}
+  .coming-soon .brand{font-size:15px;letter-spacing:3px;color:var(--dim);margin-bottom:18px;}
+  .coming-soon h1{font-size:clamp(24px,5vw,36px);font-weight:700;margin:0 0 14px;}
+  .coming-soon .tagline{max-width:480px;font-size:13.5px;color:var(--dim);line-height:1.7;}
+  .coming-soon a{color:var(--amber);}
+</style>
+</head>
+<body>
+
+<div class="coming-soon" id="comingSoon">
+  <div class="brand mono">ETHCORPUS</div>
+  <h1>The signal is coming.</h1>
+  <p class="tagline">This page will be live when EthCorpus launches on 27 September 2026. <a href="index.html">Back to the countdown</a>.</p>
+</div>
+
+<div id="mainContent" style="display:none;">
+<div class="wrap">
+  <div class="topbar">
+    <div>
+      <h1>ETHCORPUS</h1>
+      <div class="sub">Track record</div>
+    </div>
+  </div>
+  <div class="site-nav mono">
+    <a href="index.html">Dashboard</a>
+    <span class="sep">·</span>
+    <a href="track-record.html" class="current">Track record</a>
+    <span class="sep">·</span>
+    <a href="methodology.html">Methodology</a>
+    <span class="sep">·</span>
+    <a href="changelog.html">Changelog</a>
+  </div>
+
+  <p class="intro">Every signal this system has logged gets graded automatically once its time horizon passes, using real price data — nothing here is cherry-picked or graded by hand. "Total graded" and "win rate" below count every graded signal, all-time. The confidence-bucket breakdown uses the same rolling, recency-weighted accuracy figures the dashboard itself uses to calibrate its displayed confidence — see the note under that table for what "recency-weighted" means.</p>
+
+  <div id="sections"></div>
+
+  <div class="empty" id="loadingNote">Loading track record…</div>
+</div>
+</div>
+
+<script>
+const SUPABASE_URL = 'https://bvqkgaciwzyxmvqhwaaj.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_0n2vH5-f2AhQiusPHwXD-w_2Gbh_9vu';
+const LAUNCH_TIME = new Date('2026-09-27T06:10:00+01:00').getTime();
+
+function checkLaunch(){
+  const params = new URLSearchParams(window.location.search);
+  const preview = params.get('preview') === 'true';
+  const launched = Date.now() >= LAUNCH_TIME || preview;
+  document.getElementById('comingSoon').style.display = launched ? 'none' : 'flex';
+  document.getElementById('mainContent').style.display = launched ? 'block' : 'none';
+  return launched;
+}
+
+const MODE_LABELS = { swing:'Swing', day:'Day-trade' };
+// Primary horizon per mode — matches collector.js MODE_CONFIGS.primaryHorizonIndex (1 for both),
+// i.e. the one horizon that actually drives calibration and weight learning server-side. Using
+// it here (rather than all horizons) avoids counting the same signal three times over.
+const PRIMARY_HORIZON = { swing:'h24', day:'h1' };
+
+async function fetchModeState(mode){
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/signal_state?mode=eq.${mode}&select=state`, {
+    headers:{ apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
+  });
+  const rows = await res.json();
+  return Array.isArray(rows) && rows.length ? rows[0].state : null;
+}
+
+// Raw, all-time, undecayed count — deliberately distinct from the calibration
+// buckets below, which are recency-weighted for a different purpose.
+function computeWinRate(state, mode){
+  const log = (state && state.log) || [];
+  const key = PRIMARY_HORIZON[mode];
+  const graded = log.filter(e => e.horizons && e.horizons[key] && e.horizons[key].graded);
+  const correct = graded.filter(e => e.horizons[key].outcome === 'correct').length;
+  return { total: graded.length, correct, winRate: graded.length ? (correct/graded.length*100) : null };
+}
+
+function renderBucketTable(calibration){
+  if(!Array.isArray(calibration) || !calibration.length) return '<div class="empty">No calibration data yet.</div>';
+  const rows = calibration.map(b=>{
+    const total = Math.round(b.total);
+    const winRate = b.total >= 1 ? Math.round((b.correct/b.total)*100) : null;
+    return `<tr>
+      <td class="mono">${b.min}–${b.max === 101 ? 100 : b.max}%</td>
+      <td class="mono">${total >= 1 ? `${Math.round(b.correct)}/${total}` : '—'}</td>
+      <td class="mono">${winRate!==null ? winRate+'%' : '—'}</td>
+    </tr>`;
+  }).join('');
+  return `<table>
+    <thead><tr><th>Confidence bucket</th><th>Correct / graded</th><th>Win rate</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>
+  <div class="bucket-note">"Correct/graded" here is a rolling, recency-weighted count (older results are gradually discounted so the figure reflects recent behaviour) — not a raw all-time tally, which is why it can look small even once many signals have been graded.</div>`;
+}
+
+const BENCHMARK_START = 1000; // hypothetical starting balance, in GBP — purely notional; see caveat text
+
+// Simplified, fully-transparent illustrative comparison — NOT a real trading backtest.
+// Buy-and-hold: value scales directly with ETH's price ratio since the first logged price.
+// "Follow every signal": between each pair of consecutive logged signals, applies the
+// return implied by whichever signal was showing at the START of that interval — BUY = full
+// long exposure, SHORT = full inverse exposure, HOLD = flat/cash (no exposure that interval).
+// This uses only information available at the time (no lookahead), but assumes you could
+// enter/exit at exactly the logged price with no fees, slippage, spread, or funding cost —
+// real execution would do worse than this.
+function computeBenchmark(state){
+  const log = [...((state && state.log) || [])].sort((a,b)=>a.ts-b.ts);
+  if(log.length < 2) return null;
+  const p0 = log[0].price;
+  let equity = BENCHMARK_START;
+  const holdCurve = [{ ts: log[0].ts, value: BENCHMARK_START }];
+  const stratCurve = [{ ts: log[0].ts, value: BENCHMARK_START }];
+  for(let i=1;i<log.length;i++){
+    const prevSignal = log[i-1].signal;
+    const dir = prevSignal === 'BUY' ? 1 : prevSignal === 'SHORT' ? -1 : 0;
+    const r = (log[i].price - log[i-1].price) / log[i-1].price;
+    equity = equity * (1 + dir*r);
+    stratCurve.push({ ts: log[i].ts, value: equity });
+    holdCurve.push({ ts: log[i].ts, value: BENCHMARK_START * (log[i].price/p0) });
+  }
+  return {
+    startDate: new Date(log[0].ts),
+    holdFinal: holdCurve[holdCurve.length-1].value,
+    stratFinal: equity,
+    holdCurve, stratCurve
+  };
+}
+
+function renderBenchmark(bm, mode){
+  if(!bm) return '<div class="empty">Not enough logged history yet to run this comparison.</div>';
+  const fmtGBP = v => '£' + v.toLocaleString(undefined,{maximumFractionDigits:0});
+  const pct = v => (((v/BENCHMARK_START)-1)*100).toFixed(1);
+  return `
+    <div class="stat-row">
+      <div class="stat-cell">
+        <div class="label">Hold ETH since ${bm.startDate.toLocaleDateString()}</div>
+        <div class="val mono">${fmtGBP(bm.holdFinal)}</div>
+        <div class="bucket-note">${pct(bm.holdFinal)>=0?'+':''}${pct(bm.holdFinal)}% on ${fmtGBP(BENCHMARK_START)}</div>
+      </div>
+      <div class="stat-cell">
+        <div class="label">Following every signal since then</div>
+        <div class="val mono">${fmtGBP(bm.stratFinal)}</div>
+        <div class="bucket-note">${pct(bm.stratFinal)>=0?'+':''}${pct(bm.stratFinal)}% on ${fmtGBP(BENCHMARK_START)}</div>
+      </div>
+    </div>
+    <div class="equity-box"><canvas id="equityChart-${mode}"></canvas></div>
+    <div class="caveat">Simplified illustrative comparison, not a real trading result. Assumes instant entry/exit at exactly the logged signal price, no fees, no slippage, no spread, and (for SHORT) no borrowing or funding cost — all of which would make real performance worse than shown here. It also starts from whenever this mode's log began, which may be a short history.</div>
+  `;
+}
+
+function drawEquityChart(mode, bm){
+  if(!bm) return;
+  const canvas = document.getElementById('equityChart-'+mode);
+  if(!canvas) return;
+  const labels = bm.holdCurve.map(p => new Date(p.ts).toLocaleDateString(undefined,{month:'short',day:'numeric'}));
+  new Chart(canvas.getContext('2d'), {
+    type:'line',
+    data:{
+      labels,
+      datasets:[
+        { label:'Hold ETH', data: bm.holdCurve.map(p=>p.value), borderColor:'#8A93A6', borderWidth:1.5, pointRadius:0, tension:0.1 },
+        { label:'Follow signals', data: bm.stratCurve.map(p=>p.value), borderColor:'#D9A441', borderWidth:1.5, pointRadius:0, tension:0.1 }
+      ]
+    },
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{ labels:{ color:'#8A93A6', font:{family:'IBM Plex Mono', size:10} } } },
+      scales:{
+        x:{ ticks:{ color:'#8A93A6', maxTicksLimit:6, font:{family:'IBM Plex Mono', size:9} }, grid:{ color:'#2A2F3A' } },
+        y:{ ticks:{ color:'#8A93A6', font:{family:'IBM Plex Mono', size:9}, callback:v=>'£'+v }, grid:{ color:'#2A2F3A' } }
+      }
+    }
+  });
+}
+
+async function renderMode(mode){
+  const state = await fetchModeState(mode);
+  const wr = computeWinRate(state, mode);
+  const calibration = (state && state.calibration) || [];
+  const bm = computeBenchmark(state);
+
+  const html = `
+    <div class="mode-section">
+      <h2>${MODE_LABELS[mode]}</h2>
+      <div class="stat-row">
+        <div class="stat-cell">
+          <div class="label">Total signals graded (all-time)</div>
+          <div class="val mono">${wr.total}</div>
+        </div>
+        <div class="stat-cell">
+          <div class="label">Overall win rate</div>
+          <div class="val mono">${wr.winRate!==null ? wr.winRate.toFixed(1)+'%' : '—'}</div>
+        </div>
+      </div>
+      ${renderBucketTable(calibration)}
+      <h3 style="margin:22px 0 10px;font-size:13px;">Hypothetical £${BENCHMARK_START.toLocaleString()}: hold vs. follow every signal</h3>
+      ${renderBenchmark(bm, mode)}
+    </div>
+  `;
+  return { html, bm, mode };
+}
+
+async function init(){
+  if(!checkLaunch()) return;
+  try{
+    const [swing, day] = await Promise.all([renderMode('swing'), renderMode('day')]);
+    document.getElementById('sections').innerHTML = swing.html + day.html;
+    document.getElementById('loadingNote').style.display = 'none';
+    // Charts need their canvases in the DOM first, hence drawn only after innerHTML is set.
+    drawEquityChart('swing', swing.bm);
+    drawEquityChart('day', day.bm);
+  }catch(e){
+    console.error('track record load failed', e);
+    document.getElementById('loadingNote').textContent = 'Failed to load track record — try refreshing.';
+  }
+}
+checkLaunch();
+init();
+</script>
+</body>
+</html>
