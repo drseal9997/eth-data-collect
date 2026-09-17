@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>EthCorpus — Live ETH Signals</title>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#0D0F14">
@@ -114,6 +115,70 @@
   .countdown-unit .num{font-size:clamp(24px,5vw,34px);font-weight:700;color:var(--amber);}
   .countdown-unit .lbl{font-size:10px;color:var(--dim);letter-spacing:1.5px;margin-top:4px;}
   .coming-soon .launch-line{font-size:11.5px;color:var(--dim);}
+
+  @keyframes skeleton-pulse{ 0%{opacity:0.45;} 50%{opacity:0.9;} 100%{opacity:0.45;} }
+  .skeleton{background:var(--line);border-radius:3px;animation:skeleton-pulse 1.4s ease-in-out infinite;color:transparent!important;}
+  .skeleton-bar{display:inline-block;height:0.9em;width:60px;vertical-align:middle;}
+  .skeleton-overlay{position:absolute;inset:16px;display:flex;flex-direction:column;justify-content:space-between;padding:6px 0;pointer-events:none;}
+  .skeleton-overlay .row{height:14%;}
+
+  .help-btn{width:22px;height:22px;border-radius:50%;border:1px solid var(--line);background:none;color:var(--dim);font-size:12px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;padding:0;flex-shrink:0;}
+  .help-btn:hover{color:var(--amber);border-color:var(--amber);}
+  .onboard-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:1500;display:none;}
+  .onboard-target{position:relative;z-index:1501;box-shadow:0 0 0 4px var(--amber), 0 0 40px 6px rgba(0,0,0,0.7);border-radius:2px;}
+  .onboard-card{position:fixed;z-index:1502;max-width:280px;background:var(--panel);border:1px solid var(--amber);padding:14px 16px;box-shadow:0 8px 24px rgba(0,0,0,0.5);display:none;}
+  .onboard-card .step-text{font-size:12.5px;line-height:1.6;margin-bottom:12px;}
+  .onboard-card .step-footer{display:flex;justify-content:space-between;align-items:center;}
+  .onboard-card .progress{color:var(--dim);font-size:11px;}
+  .onboard-card .actions button{font-family:'Space Grotesk',sans-serif;font-size:12px;padding:6px 12px;cursor:pointer;border:1px solid var(--line);background:none;color:var(--text);margin-left:6px;}
+  .onboard-card .actions button.primary{border-color:var(--amber);color:var(--amber);}
+
+  .table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin-bottom:6px;}
+
+  /* ---------- mobile layout pass (phones, ~375-430px wide) ---------- */
+  @media (max-width:480px){
+    .wrap{padding:18px 14px 48px;}
+    .topbar{gap:8px 12px;}
+    h1{font-size:16px;}
+    .sub{font-size:11.5px;}
+    .mode-btn{padding:7px 10px;font-size:11.5px;}
+    .site-nav{font-size:11px;}
+
+    /* The 8-button timeframe row (plus reset-zoom and line/candle toggle) is the
+       single biggest overflow source on a phone — without this it forces the
+       entire page wider than the viewport, clipping everything else (including
+       the topbar) off-screen to the right. Wrapping keeps every button on-screen
+       and tappable instead. */
+    .chart-controls{flex-direction:column;align-items:stretch;}
+    .btn-group{flex-wrap:wrap;}
+    .btn-group button{flex:1 1 auto;padding:8px 6px;font-size:11px;min-width:38px;}
+    #resetZoomBtn{align-self:flex-start;}
+
+    .verdict-word{font-size:23px;}
+    .verdict-price b{font-size:17px;}
+    .chart-box{padding:10px;}
+    .chart-box canvas{max-width:100%;}
+
+    /* Four columns of dense text is unreadable this narrow — stack instead. */
+    .weights{grid-template-columns:1fr;}
+    .weights div.cell{border-right:none;border-bottom:1px solid var(--line);}
+    .weights div.cell:last-child{border-bottom:none;}
+
+    /* The signal log's 7 columns don't fit; scroll horizontally instead of
+       squeezing (see .table-scroll on the wrapping div) rather than overflowing
+       the page or becoming illegibly cramped. */
+    table{font-size:11.5px;}
+    th,td{padding:7px 6px;}
+
+    .analog-card{flex-direction:column;align-items:flex-start;}
+    .analog-card .outcome-block{text-align:left;}
+    .current-pattern{flex-direction:column;align-items:flex-start;}
+
+    .install-banner{flex-direction:column;align-items:flex-start;}
+
+    .onboard-card{max-width:calc(100vw - 32px);}
+    .help-btn{width:30px;height:30px;font-size:13px;}
+  }
 </style>
 </head>
 <body>
@@ -146,12 +211,15 @@
     </div>
   </div>
 
-  <div class="site-nav mono">
-    <a href="track-record.html">Track record</a>
-    <span class="sep">·</span>
-    <a href="methodology.html">Methodology</a>
-    <span class="sep">·</span>
-    <a href="changelog.html">Changelog</a>
+  <div class="site-nav mono" style="display:flex;justify-content:space-between;align-items:center;">
+    <div>
+      <a href="track-record.html">Track record</a>
+      <span class="sep">·</span>
+      <a href="methodology.html">Methodology</a>
+      <span class="sep">·</span>
+      <a href="changelog.html">Changelog</a>
+    </div>
+    <button class="help-btn" id="helpBtn" type="button" title="Show the walkthrough again">?</button>
   </div>
 
   <div class="verdict-box" id="verdictBox">
@@ -166,12 +234,22 @@
     <canvas id="candleChart" style="display:none;position:absolute;top:16px;left:16px;"></canvas>
     <div id="zoomOverlay" style="position:absolute;inset:16px;cursor:crosshair;"></div>
     <div id="chartTooltip" class="mono" style="display:none;position:absolute;pointer-events:none;background:#161A22;border:1px solid var(--line);padding:5px 8px;font-size:11px;color:var(--text);z-index:10;white-space:nowrap;"></div>
+    <div id="chartSkeleton" style="position:absolute;inset:16px;display:flex;align-items:flex-end;gap:6px;">
+      <div class="skeleton" style="flex:1;height:55%;"></div><div class="skeleton" style="flex:1;height:70%;"></div><div class="skeleton" style="flex:1;height:40%;"></div><div class="skeleton" style="flex:1;height:85%;"></div><div class="skeleton" style="flex:1;height:60%;"></div><div class="skeleton" style="flex:1;height:75%;"></div><div class="skeleton" style="flex:1;height:50%;"></div><div class="skeleton" style="flex:1;height:65%;"></div><div class="skeleton" style="flex:1;height:45%;"></div><div class="skeleton" style="flex:1;height:80%;"></div>
+    </div>
   </div>
   <div class="chart-box" style="height:70px;padding:8px 16px;">
     <canvas id="volumeChart"></canvas>
+    <div id="volumeSkeleton" style="position:absolute;inset:8px 16px;display:flex;align-items:flex-end;gap:4px;">
+      <div class="skeleton" style="flex:1;height:40%;"></div><div class="skeleton" style="flex:1;height:70%;"></div><div class="skeleton" style="flex:1;height:30%;"></div><div class="skeleton" style="flex:1;height:60%;"></div><div class="skeleton" style="flex:1;height:50%;"></div><div class="skeleton" style="flex:1;height:80%;"></div><div class="skeleton" style="flex:1;height:35%;"></div><div class="skeleton" style="flex:1;height:55%;"></div>
+    </div>
   </div>
-  <div class="chart-box" style="height:110px;padding:8px 16px;">
+  <div class="chart-box" style="height:110px;padding:8px 16px;position:relative;">
     <canvas id="indicatorChart"></canvas>
+    <div id="indicatorSkeleton" style="position:absolute;inset:8px 16px;">
+      <div class="skeleton" style="height:35%;margin-bottom:10px;"></div>
+      <div class="skeleton" style="height:35%;"></div>
+    </div>
   </div>
   <div class="chart-controls">
     <div class="btn-group" id="timeframeGroup">
@@ -202,20 +280,20 @@
 
   <div class="weights">
     <div class="cell">
-      <div class="label">Technical</div><div class="val mono" id="wTech">—</div>
+      <div class="label">Technical</div><div class="val mono skeleton skeleton-bar" id="wTech"></div>
       <div class="desc">Price patterns — trend direction and momentum indicators (RSI, MACD).</div>
     </div>
     <div class="cell">
-      <div class="label">Whale flow</div><div class="val mono" id="wWhale">—</div>
+      <div class="label">Whale flow</div><div class="val mono skeleton skeleton-bar" id="wWhale"></div>
       <div class="desc">Large wallets moving ETH to or from exchanges — often a sign of buying or selling pressure ahead.</div>
     </div>
     <div class="cell">
-      <div class="label">Sentiment</div><div class="val mono" id="wSent">—</div>
+      <div class="label">Sentiment</div><div class="val mono skeleton skeleton-bar" id="wSent"></div>
       <div class="desc">Recent news and social media mood around ETH.</div>
       <div class="desc" id="sentLive" style="margin-top:6px;color:var(--text);"></div>
     </div>
     <div class="cell">
-      <div class="label">Market context</div><div class="val mono" id="wContext">—</div>
+      <div class="label">Market context</div><div class="val mono skeleton skeleton-bar" id="wContext"></div>
       <div class="desc">Broader crypto mood (Fear &amp; Greed Index) and futures funding rates.</div>
     </div>
   </div>
@@ -225,7 +303,7 @@
     <h2>AI take</h2>
     <span class="ai-ts" id="aiCommentaryTs"></span>
   </div>
-  <div class="pattern-summary" id="aiCommentaryText">Not generated yet.</div>
+  <div class="pattern-summary" id="aiCommentaryText">No AI take yet — it's generated roughly once an hour, once there's enough signal data for it to comment on. Check back shortly.</div>
 
   <div class="section-head">
     <h2>Historical pattern match</h2>
@@ -243,17 +321,23 @@
     <span class="stat-line" id="newsTs"></span>
   </div>
   <ul class="news-list" id="newsList"></ul>
-  <div class="empty" id="newsEmpty" style="display:none;">No headlines available right now.</div>
+  <div class="empty" id="newsEmpty" style="display:none;">No headlines available right now — this list refreshes automatically every 15 minutes, so try checking back shortly.</div>
 
   <div class="section-head">
     <h2>Signal log</h2>
     <div class="stat-line" id="statLine"></div>
   </div>
+  <div class="table-scroll">
   <table>
     <thead id="logHead"><tr><th>Time</th><th>Price</th><th>Signal</th><th>Confidence</th><th>—</th><th>—</th><th>—</th></tr></thead>
-    <tbody id="logBody"></tbody>
+    <tbody id="logBody">
+      <tr class="skeleton-row"><td><div class="skeleton skeleton-bar" style="width:90px;"></div></td><td><div class="skeleton skeleton-bar" style="width:55px;"></div></td><td><div class="skeleton skeleton-bar" style="width:45px;"></div></td><td><div class="skeleton skeleton-bar" style="width:40px;"></div></td><td><div class="skeleton skeleton-bar" style="width:20px;"></div></td><td><div class="skeleton skeleton-bar" style="width:20px;"></div></td><td><div class="skeleton skeleton-bar" style="width:20px;"></div></td></tr>
+      <tr class="skeleton-row"><td><div class="skeleton skeleton-bar" style="width:90px;"></div></td><td><div class="skeleton skeleton-bar" style="width:55px;"></div></td><td><div class="skeleton skeleton-bar" style="width:45px;"></div></td><td><div class="skeleton skeleton-bar" style="width:40px;"></div></td><td><div class="skeleton skeleton-bar" style="width:20px;"></div></td><td><div class="skeleton skeleton-bar" style="width:20px;"></div></td><td><div class="skeleton skeleton-bar" style="width:20px;"></div></td></tr>
+      <tr class="skeleton-row"><td><div class="skeleton skeleton-bar" style="width:90px;"></div></td><td><div class="skeleton skeleton-bar" style="width:55px;"></div></td><td><div class="skeleton skeleton-bar" style="width:45px;"></div></td><td><div class="skeleton skeleton-bar" style="width:40px;"></div></td><td><div class="skeleton skeleton-bar" style="width:20px;"></div></td><td><div class="skeleton skeleton-bar" style="width:20px;"></div></td><td><div class="skeleton skeleton-bar" style="width:20px;"></div></td></tr>
+    </tbody>
   </table>
-  <div class="empty" id="logEmpty" style="display:none;">No signals logged yet.</div>
+  </div>
+  <div class="empty" id="logEmpty" style="display:none;">No signals logged yet — the collector runs continuously in the background and logs a new entry on its regular schedule, so the first one should appear shortly.</div>
 
   <div class="last-updated" id="lastUpdated" style="margin-top:16px;"></div>
 
@@ -261,6 +345,18 @@
     The verdict above reflects the current composite signal, not a guarantee. Pattern matches show what happened after similar historical price shapes in the available data — a base rate for context, not a prediction of what will happen this time. Refreshes every 60 seconds. Not financial advice.
   </div>
 </div>
+</div>
+
+<div class="onboard-backdrop" id="onboardBackdrop"></div>
+<div class="onboard-card mono" id="onboardCard">
+  <div class="step-text" id="onboardStepText"></div>
+  <div class="step-footer">
+    <span class="progress" id="onboardProgress"></span>
+    <div class="actions">
+      <button id="onboardSkip" type="button">Skip</button>
+      <button id="onboardNext" class="primary" type="button">Next</button>
+    </div>
+  </div>
 </div>
 
 <div class="install-banner" id="installBanner">
@@ -317,6 +413,7 @@ const MODE_HORIZON_LABELS = {
   swing: [['h1','1h'],['h24','24h'],['d7','7d']],
   day: [['m15','15m'],['h1','1h'],['h4','4h']]
 };
+const MODE_LABELS_SHORT = { swing:'Swing', day:'Day-trade' };
 
 let currentMode = 'swing';
 let chart = null;
@@ -660,6 +757,16 @@ function findBestChartAnalog(closes, windowSize, horizon){
   return best;
 }
 
+// Skeletons are only ever shown pre-first-load; once we've genuinely attempted a
+// render (succeeded or failed), they'd otherwise sit on top of and hide whatever
+// real content or "unavailable" message gets drawn underneath them.
+function hideChartSkeletons(){
+  ['chartSkeleton','volumeSkeleton','indicatorSkeleton'].forEach(id=>{
+    const el = document.getElementById(id);
+    if(el) el.style.display = 'none';
+  });
+}
+
 async function renderPriceChart(){
   const noteEl = document.getElementById('chartEchoNote');
   const myRequestId = ++chartRequestId;
@@ -671,10 +778,12 @@ async function renderPriceChart(){
   }catch(e){
     console.error('chart load failed', e);
     if(myRequestId !== chartRequestId) return; // a newer request already superseded this one
+    hideChartSkeletons();
     if(noteEl) noteEl.textContent = 'Couldn\'t load fresh chart data just now (likely a rate limit) — showing the last successful load. Will retry automatically.';
     return; // leave whatever was last drawn on screen instead of blanking it
   }
   if(myRequestId !== chartRequestId) return; // a newer request already superseded this one — discard this stale result
+  hideChartSkeletons();
 
   ohlc = applyZoom(ohlc); // restrict to the click-drag zoom window, if one is active
   lastVisibleOhlc = ohlc; // remembered so the drag handler can map future selections back to timestamps
@@ -1090,6 +1199,11 @@ function renderLogAndWeights(state, mode){
   const horizons = MODE_HORIZON_LABELS[mode];
   document.querySelectorAll('#logHead th').forEach((th,i)=>{ if(i>=4) th.textContent = horizons[i-4][1]; });
 
+  // Once real data arrives (even a "—" fallback), the skeleton placeholder classes
+  // are no longer wanted — they'd otherwise keep pulsing forever with hidden text.
+  const wIds = ['wTech','wWhale','wSent','wContext'];
+  wIds.forEach(id=>document.getElementById(id).classList.remove('skeleton','skeleton-bar'));
+
   const w = (state && state.weights) || {};
   document.getElementById('wTech').textContent = w.tech!=null ? Math.round(w.tech*100)+'%' : '—';
   document.getElementById('wWhale').textContent = w.whale!=null ? Math.round(w.whale*100)+'%' : '—';
@@ -1100,7 +1214,13 @@ function renderLogAndWeights(state, mode){
   const body = document.getElementById('logBody');
   const empty = document.getElementById('logEmpty');
   const sorted = [...log].sort((a,b)=>b.ts-a.ts);
-  if(!sorted.length){ empty.style.display='block'; body.innerHTML=''; }
+  if(!sorted.length){
+    // Explicitly reset the message each time (rather than relying on the static HTML
+    // default) so this can't ever get stuck showing a leftover error/fallback string
+    // from some other code path.
+    empty.textContent = `No ${MODE_LABELS_SHORT[mode] || mode} signals logged yet — the collector runs continuously in the background and logs a new entry on its regular schedule, so the first one should appear shortly.`;
+    empty.style.display='block'; body.innerHTML='';
+  }
   else{
     empty.style.display='none';
     const badgeFor = (h)=>{
@@ -1136,7 +1256,7 @@ function renderLogAndWeights(state, mode){
       parts.push(`${label} <b>${correct}/${graded.length}</b> (${Math.round(correct/graded.length*100)}%)`);
     }
   });
-  document.getElementById('statLine').innerHTML = parts.join(' · ') || 'no graded signals yet';
+  document.getElementById('statLine').innerHTML = parts.join(' · ') || 'No signals graded yet — grading happens automatically once each signal\'s time horizon has passed.';
 }
 
 async function refresh(){
@@ -1161,7 +1281,7 @@ async function refresh(){
     if(shared && shared.lastSentiment){
       sentLiveEl.textContent = `${shared.lastSentiment.score>0?'+':''}${shared.lastSentiment.score} — "${shared.lastSentiment.summary}"`;
     } else {
-      sentLiveEl.textContent = 'Not checked yet.';
+      sentLiveEl.textContent = 'Not checked yet — sentiment is checked periodically from recent ETH news headlines.';
     }
 
     const aiTextEl = document.getElementById('aiCommentaryText');
@@ -1170,7 +1290,7 @@ async function refresh(){
       aiTextEl.textContent = shared.aiCommentary;
       aiTsEl.textContent = shared.lastAICommentaryTs ? 'as of ' + new Date(shared.lastAICommentaryTs).toLocaleString() : '';
     } else {
-      aiTextEl.textContent = 'Not generated yet.';
+      aiTextEl.textContent = 'No AI take yet — it\'s generated roughly once an hour, once there\'s enough signal data for it to comment on. Check back shortly.';
     }
 
     document.getElementById('lastUpdated').textContent = 'Page refreshed ' + new Date().toLocaleTimeString();
@@ -1192,11 +1312,84 @@ document.getElementById('btnDay').addEventListener('click', ()=>{
   refresh().then(renderPriceChart); // re-plot markers for the newly selected mode's log
 });
 
-refresh().then(renderPriceChart); // ensure currentLog is populated before the first chart draw, so markers appear immediately
+refresh().then(()=>{ renderPriceChart(); maybeStartOnboarding(); }); // ensure currentLog is populated before the first chart draw, so markers appear immediately
 fetchHeadlines().then(renderNews);
 setInterval(refresh, 60000);
 setInterval(renderPriceChart, 60000);
 setInterval(()=>fetchHeadlines().then(renderNews), 15*60000);
+
+// Redraw the chart/volume/RSI-MACD canvases on resize or orientation change —
+// their pixel dimensions are computed from the container's width at draw time,
+// so without this a phone rotation would leave them sized for the old width.
+let resizeTimer = null;
+window.addEventListener('resize', ()=>{
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(renderPriceChart, 250);
+});
+
+// ---------- first-visit onboarding walkthrough ----------
+const ONBOARDING_KEY = 'eth_onboarding_seen';
+const ONBOARDING_STEPS = [
+  { selector:'#verdictBox', text:'This is the current signal — BUY, SHORT, or WAIT — with a confidence percentage. It updates automatically as new data comes in, and it\'s never a guarantee.' },
+  { selector:'.weights', text:'These percentages show how much each of the four factors — technical, whale flow, sentiment, market context — is currently driving the signal. They adjust over time based on which factors have actually been right.' },
+  { selector:'.current-pattern', text:'This compares today\'s price shape to similar moments in the available history, and shows what tended to happen next — useful context, not a prediction.' },
+  { selector:'.site-nav', text:'Curious how accurate this has actually been? The Track record page shows every graded signal\'s real win rate, all-time — genuinely, not cherry-picked. Tap the "?" here anytime to see this walkthrough again.' }
+];
+let onboardingStep = 0;
+
+function positionOnboardCard(target){
+  const card = document.getElementById('onboardCard');
+  const rect = target.getBoundingClientRect();
+  const cardRect = card.getBoundingClientRect();
+  let top = rect.bottom + 12;
+  if(top + cardRect.height > window.innerHeight - 10) top = Math.max(10, rect.top - cardRect.height - 12);
+  const left = Math.min(window.innerWidth - cardRect.width - 10, Math.max(10, rect.left));
+  card.style.top = top+'px';
+  card.style.left = left+'px';
+}
+
+function showOnboardingStep(i){
+  document.querySelectorAll('.onboard-target').forEach(el=>el.classList.remove('onboard-target'));
+  const step = ONBOARDING_STEPS[i];
+  const target = document.querySelector(step.selector);
+  if(!target){ finishOnboarding(); return; }
+  target.classList.add('onboard-target');
+  target.scrollIntoView({ block:'center' });
+  document.getElementById('onboardStepText').textContent = step.text;
+  document.getElementById('onboardProgress').textContent = (i+1)+' / '+ONBOARDING_STEPS.length;
+  document.getElementById('onboardNext').textContent = i===ONBOARDING_STEPS.length-1 ? 'Done' : 'Next';
+  // Wait a frame for scrollIntoView to settle before measuring position.
+  requestAnimationFrame(()=> requestAnimationFrame(()=> positionOnboardCard(target)));
+}
+
+function startOnboarding(){
+  onboardingStep = 0;
+  document.getElementById('onboardBackdrop').style.display = 'block';
+  document.getElementById('onboardCard').style.display = 'block';
+  showOnboardingStep(0);
+}
+
+function finishOnboarding(){
+  document.querySelectorAll('.onboard-target').forEach(el=>el.classList.remove('onboard-target'));
+  document.getElementById('onboardBackdrop').style.display = 'none';
+  document.getElementById('onboardCard').style.display = 'none';
+  try{ localStorage.setItem(ONBOARDING_KEY, 'yes'); }catch(e){}
+}
+
+function maybeStartOnboarding(){
+  let seen = false;
+  try{ seen = localStorage.getItem(ONBOARDING_KEY) === 'yes'; }catch(e){}
+  if(!seen && checkLaunch()) startOnboarding();
+}
+
+document.getElementById('onboardNext').addEventListener('click', ()=>{
+  if(onboardingStep >= ONBOARDING_STEPS.length-1){ finishOnboarding(); return; }
+  onboardingStep++;
+  showOnboardingStep(onboardingStep);
+});
+document.getElementById('onboardSkip').addEventListener('click', finishOnboarding);
+document.getElementById('onboardBackdrop').addEventListener('click', finishOnboarding);
+document.getElementById('helpBtn').addEventListener('click', startOnboarding);
 
 if('serviceWorker' in navigator){
   navigator.serviceWorker.register('sw.js').catch(()=>{});
