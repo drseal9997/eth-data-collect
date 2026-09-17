@@ -116,6 +116,17 @@ function checkLaunch(){
   document.getElementById('mainContent').style.display = launched ? 'block' : 'none';
 }
 checkLaunch();
+
+// Carries ?preview=true (or any other query string) along to every internal
+// .html link on the page — nav bar and in-body links alike — so following a
+// link from a previewed page doesn't drop you back onto the countdown.
+function propagateQueryToNav(){
+  if(!window.location.search) return;
+  document.querySelectorAll('a[href$=".html"]').forEach(a=>{
+    if(!a.href.includes('?')) a.href += window.location.search;
+  });
+}
+propagateQueryToNav();
 </script>
 </body>
 </html>
