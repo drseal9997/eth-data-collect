@@ -151,6 +151,14 @@
   <div class="chart-box">
     <canvas id="priceChart"></canvas>
     <canvas id="candleChart" style="display:none;position:absolute;top:16px;left:16px;"></canvas>
+    <div id="zoomOverlay" style="position:absolute;inset:16px;cursor:crosshair;"></div>
+    <div id="chartTooltip" class="mono" style="display:none;position:absolute;pointer-events:none;background:#161A22;border:1px solid var(--line);padding:5px 8px;font-size:11px;color:var(--text);z-index:10;white-space:nowrap;"></div>
+  </div>
+  <div class="chart-box" style="height:70px;padding:8px 16px;">
+    <canvas id="volumeChart"></canvas>
+  </div>
+  <div class="chart-box" style="height:110px;padding:8px 16px;">
+    <canvas id="indicatorChart"></canvas>
   </div>
   <div class="chart-controls">
     <div class="btn-group" id="timeframeGroup">
@@ -163,12 +171,21 @@
       <button data-tf="30D">30D</button>
       <button data-tf="90D">90D</button>
     </div>
+    <button id="resetZoomBtn" class="mono" style="display:none;background:none;border:1px solid var(--amber);color:var(--amber);font-size:11px;padding:6px 10px;cursor:pointer;">Reset zoom</button>
     <div class="btn-group" id="chartTypeGroup">
       <button data-type="line" class="active">Line</button>
       <button data-type="candles">Candles</button>
     </div>
   </div>
   <div class="stat-line" id="chartEchoNote" style="margin:-6px 0 14px;"></div>
+  <div class="stat-line" style="margin:-10px 0 14px;display:flex;gap:16px;">
+    <label class="mono" style="cursor:pointer;display:flex;align-items:center;gap:5px;">
+      <input type="checkbox" id="smaShortToggle" checked><span id="smaShortLabel">SMA short</span>
+    </label>
+    <label class="mono" style="cursor:pointer;display:flex;align-items:center;gap:5px;">
+      <input type="checkbox" id="smaLongToggle" checked><span id="smaLongLabel">SMA long</span>
+    </label>
+  </div>
 
   <div class="weights">
     <div class="cell">
@@ -283,6 +300,36 @@ let chartType = 'line';
 let timeframe = '1D';
 let chartRequestId = 0;
 const ohlcCache = {};
+let currentLog = []; // latest mode's signal log, used to plot markers on the price chart
+let zoomRange = null; // {startTs, endTs} set by click-drag zoom, or null for the full timeframe
+let lastVisibleOhlc = []; // the OHLC slice actually drawn last, used to map drag pixels back to timestamps
+
+// Restricts the fetched OHLC array to the active zoomRange, if any. Falls back to
+// the full array if the zoom window would leave too few candles to render sensibly.
+function applyZoom(ohlc){
+  if(!zoomRange) return ohlc;
+  const sliced = ohlc.filter(c => c[0]>=zoomRange.startTs && c[0]<=zoomRange.endTs);
+  return sliced.length >= 4 ? sliced : ohlc;
+}
+
+// Finds, for each BUY/SHORT signal whose timestamp falls inside the visible OHLC
+// range, the nearest candle index — used to place a marker at that point.
+function findMarkersInRange(ohlc, log){
+  if(!ohlc || !ohlc.length || !log || !log.length) return [];
+  const startTs = ohlc[0][0], endTs = ohlc[ohlc.length-1][0];
+  const marks = [];
+  for(const entry of log){
+    if(entry.signal !== 'BUY' && entry.signal !== 'SHORT') continue;
+    if(entry.ts < startTs || entry.ts > endTs) continue;
+    let bestIdx = 0, bestDiff = Infinity;
+    for(let i=0;i<ohlc.length;i++){
+      const diff = Math.abs(ohlc[i][0]-entry.ts);
+      if(diff < bestDiff){ bestDiff = diff; bestIdx = i; }
+    }
+    marks.push({ idx: bestIdx, price: entry.price, signal: entry.signal, ts: entry.ts });
+  }
+  return marks;
+}
 
 const TIMEFRAME_CONFIG = {
   '1H':{days:1, hoursBack:1}, '6H':{days:1, hoursBack:6}, '12H':{days:1, hoursBack:12}, '1D':{days:1, hoursBack:24},
@@ -307,7 +354,193 @@ async function fetchOHLC(tf){
   return fullData.filter(c => c[0] >= cutoff);
 }
 
-function drawCandles(ohlc){
+// CoinGecko's /ohlc endpoint (used above) has no volume field — only
+// /market_chart does, so volume is fetched separately here and aligned to the
+// OHLC candles by nearest timestamp when drawn.
+const volumeCache = {};
+async function fetchVolume(tf){
+  const cfg = TIMEFRAME_CONFIG[tf];
+  const cacheKey = cfg.days;
+  const cached = volumeCache[cacheKey];
+  let fullData;
+  if(cached && (Date.now()-cached.ts) < 45000){
+    fullData = cached.data;
+  } else {
+    const res = await fetch(`https://api.coingecko.com/api/v3/coins/ethereum/market_chart?vs_currency=usd&days=${cfg.days}`);
+    if(!res.ok) throw new Error('volume fetch failed: '+res.status);
+    const data = await res.json();
+    fullData = data.total_volumes || []; // [[ts, volume], ...]
+    volumeCache[cacheKey] = { data:fullData, ts:Date.now() };
+  }
+  const cutoff = Date.now() - cfg.hoursBack*3600000;
+  return fullData.filter(v => v[0] >= cutoff);
+}
+
+// Aligns a volume series (its own timestamps, usually coarser than OHLC candles)
+// to the OHLC candle array by nearest timestamp, one volume value per candle.
+function alignVolumeToCandles(ohlc, volumes){
+  if(!ohlc.length || !volumes.length) return ohlc.map(()=>0);
+  return ohlc.map(c=>{
+    let best = volumes[0], bestDiff = Math.abs(volumes[0][0]-c[0]);
+    for(const v of volumes){
+      const diff = Math.abs(v[0]-c[0]);
+      if(diff < bestDiff){ bestDiff = diff; best = v; }
+    }
+    return best[1];
+  });
+}
+
+function drawVolumeBars(ohlc, volumes){
+  const canvas = document.getElementById('volumeChart');
+  const box = canvas.parentElement;
+  const w = box.clientWidth - 32, h = box.clientHeight - 16;
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0,0,w,h);
+  if(!ohlc.length) return;
+  if(!volumes.length){
+    ctx.font = '11px IBM Plex Mono, monospace';
+    ctx.fillStyle = '#8A93A6';
+    ctx.fillText('Volume data unavailable right now.', 4, h/2);
+    return;
+  }
+
+  const aligned = alignVolumeToCandles(ohlc, volumes);
+  const max = Math.max(...aligned, 1);
+  const slot = w/ohlc.length;
+  const barW = Math.max(1, slot*0.6);
+
+  ohlc.forEach((c,i)=>{
+    const [, open, , , close] = c;
+    const up = close >= open;
+    const barH = Math.max(1, (aligned[i]/max)*h);
+    ctx.fillStyle = up ? 'rgba(78,166,114,0.55)' : 'rgba(180,71,46,0.55)';
+    ctx.fillRect(i*slot + slot/2 - barW/2, h-barH, barW, barH);
+  });
+}
+
+// RSI/MACD periods mirror the server-side MODE_CONFIGS in collector.js (swing
+// uses slower, day-trade uses faster periods) so the mini-chart matches what
+// actually drives that mode's technical score.
+const CHART_IND_CFG = {
+  swing:{ rsiPeriod:14, smaShort:20, smaLong:50 },
+  day:{ rsiPeriod:7, smaShort:9, smaLong:21 }
+};
+
+function calcSMA(vals, period){
+  const out=[];
+  for(let i=0;i<vals.length;i++){
+    if(i<period-1){ out.push(null); continue; }
+    let sum=0; for(let j=i-period+1;j<=i;j++) sum+=vals[j];
+    out.push(sum/period);
+  }
+  return out;
+}
+
+function calcRSI(vals, period){
+  if(vals.length <= period) return vals.map(()=>null);
+  let gains=0, losses=0;
+  for(let i=1;i<=period;i++){ const d=vals[i]-vals[i-1]; if(d>=0) gains+=d; else losses-=d; }
+  let avgGain=gains/period, avgLoss=losses/period;
+  const out=new Array(period).fill(null);
+  out.push(avgLoss===0?100:100-(100/(1+avgGain/avgLoss)));
+  for(let i=period+1;i<vals.length;i++){
+    const d=vals[i]-vals[i-1]; const gain=d>0?d:0, loss=d<0?-d:0;
+    avgGain=(avgGain*(period-1)+gain)/period; avgLoss=(avgLoss*(period-1)+loss)/period;
+    out.push(avgLoss===0?100:100-(100/(1+avgGain/avgLoss)));
+  }
+  return out;
+}
+function calcEMA(vals, period){
+  const k=2/(period+1); const out=[vals[0]];
+  for(let i=1;i<vals.length;i++) out.push(vals[i]*k+out[i-1]*(1-k));
+  return out;
+}
+function calcMACDHist(vals){
+  const ema12=calcEMA(vals,12), ema26=calcEMA(vals,26);
+  const macdLine = ema12.map((v,i)=>v-ema26[i]);
+  const signalLine = calcEMA(macdLine,9);
+  return macdLine.map((v,i)=>v-signalLine[i]);
+}
+
+function drawIndicatorStrip(ohlc, mode){
+  const canvas = document.getElementById('indicatorChart');
+  const box = canvas.parentElement;
+  const w = box.clientWidth - 32, h = box.clientHeight - 16;
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0,0,w,h);
+
+  const rsiPeriod = CHART_IND_CFG[mode] ? CHART_IND_CFG[mode].rsiPeriod : 14;
+  const minLen = rsiPeriod + 30; // needs enough bars for RSI warmup + a meaningful 12/26/9 MACD
+  if(!ohlc.length || ohlc.length < minLen){
+    ctx.font = '11px IBM Plex Mono, monospace';
+    ctx.fillStyle = '#8A93A6';
+    ctx.fillText('Not enough data at this timeframe for RSI/MACD.', 4, h/2);
+    return;
+  }
+
+  const closes = ohlc.map(c=>c[4]);
+  const rsiArr = calcRSI(closes, rsiPeriod);
+  const histArr = calcMACDHist(closes);
+  const slot = w/ohlc.length;
+
+  const rsiH = Math.floor(h*0.55), macdTop = rsiH+8, macdH = h-macdTop;
+
+  // RSI panel: 0-100 scale, dashed reference lines at 30/70
+  ctx.strokeStyle = '#2A2F3A';
+  ctx.setLineDash([2,3]);
+  [30,70].forEach(level=>{
+    const y = rsiH - (level/100)*rsiH;
+    ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke();
+  });
+  ctx.setLineDash([]);
+  ctx.font = '9px IBM Plex Mono, monospace';
+  ctx.fillStyle = '#8A93A6';
+  ctx.fillText('RSI', 2, 9);
+
+  ctx.strokeStyle = '#D9A441';
+  ctx.lineWidth = 1.3;
+  ctx.beginPath();
+  let started = false;
+  rsiArr.forEach((v,i)=>{
+    if(v===null||v===undefined) return;
+    const x = i*slot + slot/2, y = rsiH - (v/100)*rsiH;
+    if(!started){ ctx.moveTo(x,y); started=true; } else ctx.lineTo(x,y);
+  });
+  ctx.stroke();
+
+  // MACD histogram panel, centered at zero
+  ctx.fillStyle = '#8A93A6';
+  ctx.fillText('MACD', 2, macdTop+9);
+  const maxAbs = Math.max(...histArr.map(v=>Math.abs(v)), 1e-6);
+  const zeroY = macdTop + macdH/2;
+  const barW = Math.max(1, slot*0.6);
+  histArr.forEach((v,i)=>{
+    const x = i*slot + slot/2 - barW/2;
+    const barH = (Math.abs(v)/maxAbs) * (macdH/2 - 4);
+    ctx.fillStyle = v>=0 ? '#4EA672' : '#B4472E';
+    if(v>=0) ctx.fillRect(x, zeroY-barH, barW, barH);
+    else ctx.fillRect(x, zeroY, barW, barH);
+  });
+  ctx.strokeStyle = '#2A2F3A';
+  ctx.beginPath(); ctx.moveTo(0,zeroY); ctx.lineTo(w,zeroY); ctx.stroke();
+}
+
+function drawSMALine(ctx, arr, candleSlot, toY, plotH, color){
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.3;
+  ctx.beginPath();
+  let started = false;
+  arr.forEach((v,i)=>{
+    if(v===null||v===undefined) return;
+    const x = i*candleSlot + candleSlot/2, y = Math.max(0, Math.min(plotH, toY(v)));
+    if(!started){ ctx.moveTo(x,y); started=true; } else ctx.lineTo(x,y);
+  });
+  ctx.stroke();
+}
+
+function drawCandles(ohlc, markers, smaLines){
   const canvas = document.getElementById('candleChart');
   const box = canvas.parentElement;
   const w = box.clientWidth - 32, h = box.clientHeight - 32;
@@ -344,6 +577,23 @@ function drawCandles(ohlc){
     const bodyTop = toY(Math.max(open,close));
     const bodyBottom = toY(Math.min(open,close));
     ctx.fillRect(x-bodyW/2, bodyTop, bodyW, Math.max(1, bodyBottom-bodyTop));
+  });
+
+  // Toggleable SMA overlays, drawn under the markers so signals stay on top.
+  if(smaLines && smaLines.short) drawSMALine(ctx, smaLines.short, candleSlot, toY, plotH, '#5B9BD5');
+  if(smaLines && smaLines.long) drawSMALine(ctx, smaLines.long, candleSlot, toY, plotH, '#D46FB3');
+
+  // Signal markers: small triangles at the price each past BUY/SHORT signal fired.
+  (markers||[]).forEach(m=>{
+    const x = m.idx*candleSlot + candleSlot/2;
+    const y = Math.max(4, Math.min(plotH-4, toY(m.price)));
+    const up = m.signal === 'BUY';
+    ctx.fillStyle = up ? '#4EA672' : '#B4472E';
+    ctx.beginPath();
+    if(up){ ctx.moveTo(x, y-7); ctx.lineTo(x-6, y+3); ctx.lineTo(x+6, y+3); }
+    else { ctx.moveTo(x, y+7); ctx.lineTo(x-6, y-3); ctx.lineTo(x+6, y-3); }
+    ctx.closePath();
+    ctx.fill();
   });
 
   if(ohlc.length>1){
@@ -401,13 +651,40 @@ async function renderPriceChart(){
     return; // leave whatever was last drawn on screen instead of blanking it
   }
   if(myRequestId !== chartRequestId) return; // a newer request already superseded this one — discard this stale result
+
+  ohlc = applyZoom(ohlc); // restrict to the click-drag zoom window, if one is active
+  lastVisibleOhlc = ohlc; // remembered so the drag handler can map future selections back to timestamps
+  document.getElementById('resetZoomBtn').style.display = zoomRange ? 'inline-block' : 'none';
+
+  // Volume is fetched independently of the main OHLC/candle rendering below —
+  // if it fails, the volume strip is just left empty rather than blocking the
+  // price chart, RSI/MACD, or anything else from rendering.
+  let volumes = [];
+  try{ volumes = await fetchVolume(timeframe); }
+  catch(e){ console.error('volume load failed', e); }
+  if(myRequestId !== chartRequestId) return;
+  try{ drawVolumeBars(ohlc, volumes); }catch(e){ console.error('volume bar render failed', e); }
+  try{ drawIndicatorStrip(ohlc, currentMode); }catch(e){ console.error('RSI/MACD strip render failed', e); }
+
+  // SMA overlay lines — periods match this mode's actual technical scoring
+  // (collector.js MODE_CONFIGS), individually toggleable via the checkboxes.
+  const smaCfg = CHART_IND_CFG[currentMode] || CHART_IND_CFG.swing;
+  const smaShortToggle = document.getElementById('smaShortToggle');
+  const smaLongToggle = document.getElementById('smaLongToggle');
+  document.getElementById('smaShortLabel').textContent = 'SMA '+smaCfg.smaShort;
+  document.getElementById('smaLongLabel').textContent = 'SMA '+smaCfg.smaLong;
+  const allCloses = ohlc.map(c=>c[4]);
+  const smaShortArr = smaShortToggle.checked ? calcSMA(allCloses, smaCfg.smaShort) : null;
+  const smaLongArr = smaLongToggle.checked ? calcSMA(allCloses, smaCfg.smaLong) : null;
+
   try{
     const lineCanvas = document.getElementById('priceChart');
     const candleCanvas = document.getElementById('candleChart');
+    const markers = findMarkersInRange(ohlc, currentLog);
     if(chartType === 'candles'){
       lineCanvas.style.display = 'none';
       candleCanvas.style.display = 'block';
-      drawCandles(ohlc);
+      drawCandles(ohlc, markers, { short: smaShortArr, long: smaLongArr });
       if(noteEl) noteEl.textContent = '';
     } else {
       candleCanvas.style.display = 'none';
@@ -425,6 +702,22 @@ async function renderPriceChart(){
 
       const datasets = [{ label:'ETH', data:closes, borderColor:'#D9A441', borderWidth:1.5, pointRadius:0, tension:0.1 }];
       let extendedLabels = labels;
+
+      // Toggleable SMA overlays (null when the corresponding checkbox is unchecked)
+      if(smaShortArr) datasets.push({ label:'SMA '+smaCfg.smaShort, data:smaShortArr, borderColor:'#5B9BD5', borderWidth:1.2, pointRadius:0, tension:0.1 });
+      if(smaLongArr) datasets.push({ label:'SMA '+smaCfg.smaLong, data:smaLongArr, borderColor:'#D46FB3', borderWidth:1.2, pointRadius:0, tension:0.1 });
+
+      // Signal markers: green triangle for each past BUY, red for each past SHORT,
+      // plotted at that signal's own price on the timestamp closest to it.
+      const buyData = new Array(closes.length).fill(null);
+      const shortData = new Array(closes.length).fill(null);
+      markers.forEach(m=>{ if(m.signal==='BUY') buyData[m.idx]=m.price; else shortData[m.idx]=m.price; });
+      if(markers.some(m=>m.signal==='BUY')){
+        datasets.push({ label:'BUY signal', data:buyData, type:'scatter', showLine:false, pointRadius:6, pointStyle:'triangle', backgroundColor:'#4EA672', borderColor:'#4EA672' });
+      }
+      if(markers.some(m=>m.signal==='SHORT')){
+        datasets.push({ label:'SHORT signal', data:shortData, type:'scatter', showLine:false, pointRadius:6, pointStyle:'triangle', rotation:180, backgroundColor:'#B4472E', borderColor:'#B4472E' });
+      }
 
       if(best && best.rmse < 0.04){
         const deltaMs = ohlc.length>1 ? (ohlc[ohlc.length-1][0]-ohlc[ohlc.length-2][0]) : 3600000;
@@ -470,6 +763,7 @@ document.querySelectorAll('#timeframeGroup button').forEach(btn=>{
     document.querySelectorAll('#timeframeGroup button').forEach(b=>b.classList.remove('active'));
     btn.classList.add('active');
     timeframe = btn.dataset.tf;
+    zoomRange = null; // switching timeframe changes the underlying data range, so any zoom no longer applies
     renderPriceChart();
   });
 });
@@ -481,6 +775,98 @@ document.querySelectorAll('#chartTypeGroup button').forEach(btn=>{
     renderPriceChart();
   });
 });
+
+// ---------- click-drag zoom ----------
+(function initZoom(){
+  const overlay = document.getElementById('zoomOverlay');
+  const resetBtn = document.getElementById('resetZoomBtn');
+  let dragStartX = null;
+  let selectionEl = null;
+
+  function removeSelection(){
+    if(selectionEl){ selectionEl.remove(); selectionEl = null; }
+  }
+
+  overlay.addEventListener('mousedown', (e)=>{
+    const rect = overlay.getBoundingClientRect();
+    dragStartX = e.clientX - rect.left;
+    removeSelection();
+    selectionEl = document.createElement('div');
+    selectionEl.style.cssText = 'position:absolute;top:0;bottom:0;background:rgba(217,164,65,0.15);border-left:1px solid var(--amber);border-right:1px solid var(--amber);pointer-events:none;';
+    selectionEl.style.left = dragStartX+'px';
+    selectionEl.style.width = '0px';
+    overlay.appendChild(selectionEl);
+  });
+
+  overlay.addEventListener('mousemove', (e)=>{
+    if(dragStartX===null || !selectionEl) return;
+    const rect = overlay.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const left = Math.min(dragStartX, x), width = Math.abs(x-dragStartX);
+    selectionEl.style.left = left+'px';
+    selectionEl.style.width = width+'px';
+  });
+
+  function finishDrag(e){
+    if(dragStartX===null) return;
+    const rect = overlay.getBoundingClientRect();
+    const endX = e.clientX - rect.left;
+    const width = rect.width;
+    removeSelection();
+    const startX = Math.max(0, Math.min(dragStartX, endX));
+    const finishX = Math.min(width, Math.max(dragStartX, endX));
+    dragStartX = null;
+    if(finishX - startX < 8 || !lastVisibleOhlc.length) return; // ignore accidental clicks/tiny drags
+
+    const t0 = lastVisibleOhlc[0][0], t1 = lastVisibleOhlc[lastVisibleOhlc.length-1][0];
+    const toTs = px => t0 + Math.max(0, Math.min(1, px/width)) * (t1-t0);
+    zoomRange = { startTs: toTs(startX), endTs: toTs(finishX) };
+    renderPriceChart();
+  }
+  overlay.addEventListener('mouseup', finishDrag);
+
+  // ---------- crosshair / hover tooltip ----------
+  const tooltip = document.getElementById('chartTooltip');
+  const crosshair = document.createElement('div');
+  crosshair.style.cssText = 'position:absolute;top:0;bottom:0;width:1px;background:#8A93A6;pointer-events:none;display:none;';
+  overlay.appendChild(crosshair);
+
+  function hideCrosshair(){
+    crosshair.style.display = 'none';
+    tooltip.style.display = 'none';
+  }
+
+  overlay.addEventListener('mousemove', (e)=>{
+    if(!lastVisibleOhlc.length){ hideCrosshair(); return; }
+    const rect = overlay.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const frac = Math.max(0, Math.min(1, x/rect.width));
+    const idx = Math.max(0, Math.min(lastVisibleOhlc.length-1, Math.round(frac*(lastVisibleOhlc.length-1))));
+    const candle = lastVisibleOhlc[idx];
+    const [ts, open, high, low, close] = candle;
+
+    crosshair.style.display = 'block';
+    crosshair.style.left = x+'px';
+
+    const timeStr = new Date(ts).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+    tooltip.innerHTML = chartType==='candles'
+      ? `${timeStr}<br>O ${open.toFixed(2)} H ${high.toFixed(2)}<br>L ${low.toFixed(2)} C ${close.toFixed(2)}`
+      : `${timeStr}<br>$${close.toFixed(2)}`;
+    tooltip.style.display = 'block';
+    const tipLeft = Math.min(rect.width-4, x+10);
+    tooltip.style.left = (overlay.offsetLeft + tipLeft)+'px';
+    tooltip.style.top = (overlay.offsetTop + 4)+'px';
+  });
+  overlay.addEventListener('mouseleave', ()=>{ dragStartX=null; removeSelection(); hideCrosshair(); });
+
+  resetBtn.addEventListener('click', ()=>{
+    zoomRange = null;
+    renderPriceChart();
+  });
+
+  document.getElementById('smaShortToggle').addEventListener('change', renderPriceChart);
+  document.getElementById('smaLongToggle').addEventListener('change', renderPriceChart);
+})();
 
 async function fetchModeState(mode){
   const res = await fetch(`${SUPABASE_URL}/rest/v1/signal_state?mode=eq.${mode}&select=state`, {
@@ -735,6 +1121,7 @@ async function refresh(){
     const shared = await fetchModeState('shared');
     const log = (state && state.log) || [];
     const latest = [...log].sort((a,b)=>b.ts-a.ts)[0] || null;
+    currentLog = log;
 
     renderVerdict(latest, currentMode);
     // Use the calibrated confidence here too, so the "combined confidence" blend
@@ -772,17 +1159,16 @@ document.getElementById('btnSwing').addEventListener('click', ()=>{
   currentMode='swing';
   document.getElementById('btnSwing').classList.add('active');
   document.getElementById('btnDay').classList.remove('active');
-  refresh();
+  refresh().then(renderPriceChart); // re-plot markers for the newly selected mode's log
 });
 document.getElementById('btnDay').addEventListener('click', ()=>{
   currentMode='day';
   document.getElementById('btnDay').classList.add('active');
   document.getElementById('btnSwing').classList.remove('active');
-  refresh();
+  refresh().then(renderPriceChart); // re-plot markers for the newly selected mode's log
 });
 
-refresh();
-renderPriceChart();
+refresh().then(renderPriceChart); // ensure currentLog is populated before the first chart draw, so markers appear immediately
 fetchHeadlines().then(renderNews);
 setInterval(refresh, 60000);
 setInterval(renderPriceChart, 60000);
