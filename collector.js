@@ -673,7 +673,34 @@ async function runModeGold(mode, sharedGold){
 // same shape as ETH's computeComposite, just with oil's own factor names.
 // Does not modify anything in the ETH or gold pipelines above; stores its
 // state under signal_state's asset='oil'.
+//
+// Price comes from the EIA (RWTC, Cushing OK WTI spot price), not Twelve
+// Data — WTI/USD on Twelve Data requires a paid plan. EIA's spot price is
+// DAILY ONLY (confirmed live against the public EIA site: no intraday
+// resolution exists for this series at all, unlike ETH/gold's minute/hourly
+// bars). Rather than pretend otherwise, oil gets its own OIL_MODE_CONFIGS
+// below with horizons expressed in whole days for both modes — "day-trade"
+// mode still uses faster indicator periods than swing, but on the same
+// daily bars, not real intraday timing.
 // =====================================================================
+
+// Mirrors MODE_CONFIGS' shape exactly (same fields computeIndicators/
+// gradeSignalsOil/runModeOil expect) but with day-scale horizons for both
+// modes, since EIA's daily-only data can't support minute/hour horizons.
+// "day" still differs meaningfully from "swing" — faster RSI/SMA periods
+// and a shorter lookback — just not via intraday timing.
+const OIL_MODE_CONFIGS = {
+  swing: {
+    label:'Swing', days:200, rsiPeriod:14, smaShort:20, smaLong:50,
+    horizons:[['d1',86400000,'1d'],['d7',604800000,'7d'],['d30',2592000000,'30d']],
+    primaryHorizonIndex:1, regimeRef:0.01, volShort:5, volLong:24, logIntervalMin:1440
+  },
+  day: {
+    label:'Day-trade', days:90, rsiPeriod:7, smaShort:5, smaLong:10,
+    horizons:[['d1',86400000,'1d'],['d3',259200000,'3d'],['d7',604800000,'7d']],
+    primaryHorizonIndex:1, regimeRef:0.006, volShort:3, volLong:10, logIntervalMin:1440
+  }
+};
 
 function freshModeStateOil(){
   return {
@@ -692,22 +719,39 @@ async function loadSharedOil(){
 }
 async function saveSharedOil(shared){ await supaSet('shared', shared, 'oil'); }
 
-// ---------- oil price: Twelve Data time_series (WTI/USD) ----------
-const OIL_TD_INTERVAL = { swing:'1h', day:'15min' };
-const OIL_TD_OUTPUTSIZE = { swing:2160, day:300 };
+// ---------- oil price: EIA daily spot price (RWTC — Cushing, OK WTI) ----------
+// EIA_API_KEY-gated, same key as the inventory factor below. Confirmed live
+// (via the public EIA site, https://www.eia.gov/dnav/pet/hist/rwtcd.htm)
+// that this series — "Cushing, OK WTI Spot Price FOB", dollars per barrel —
+// is DAILY ONLY; weekly/monthly/annual views on that page are aggregations
+// of the same daily series, not a finer resolution. The v2 API route itself
+// was confirmed live (403 needing a key, not 404); the exact JSON field
+// names below are the standard EIA v2 shape but weren't verified against a
+// real key from here — worth checking the first real run's logs.
+//
+// Distinct OIL_MODE_CONFIGS (below) exists specifically because of this:
+// horizons are in whole days for both modes, since there's no intraday data
+// to grade 15m/1h/4h horizons against at all.
+const EIA_OIL_SPOT_PRICE_URL = 'https://api.eia.gov/v2/petroleum/pri/spt/data/';
 
 async function fetchOilPriceHistory(mode){
-  const interval = OIL_TD_INTERVAL[mode];
-  const outputsize = OIL_TD_OUTPUTSIZE[mode];
-  const url = `https://api.twelvedata.com/time_series?symbol=WTI/USD&interval=${interval}&outputsize=${outputsize}&order=asc&timezone=UTC&apikey=${TWELVEDATA_KEY}`;
+  const cfg = OIL_MODE_CONFIGS[mode];
+  const url = `${EIA_OIL_SPOT_PRICE_URL}?api_key=${EIA_API_KEY}&frequency=daily&data[0]=value&facets[series][]=RWTC&sort[0][column]=period&sort[0][direction]=desc&length=${cfg.days}`;
   const res = await fetch(url);
+  if(!res.ok){ const t = await res.text(); throw new Error(`EIA spot price fetch failed: ${res.status} ${t.slice(0,200)}`); }
   const data = await res.json();
-  if(data.status === 'error' || !Array.isArray(data.values)){
-    throw new Error(`Twelve Data error (oil): ${JSON.stringify(data).slice(0,300)}`);
-  }
-  const prices = data.values.map(v => [ new Date(v.datetime.replace(' ','T')+'Z').getTime(), Number(v.close) ]);
-  // Same placeholder-volume approach as gold — WTI/USD spot quote has no
-  // meaningful volume from Twelve Data.
+  const rows = data && data.response && Array.isArray(data.response.data) ? data.response.data : null;
+  if(!rows || !rows.length) throw new Error('EIA spot price response had no data rows');
+  // We requested period desc (most-recent first) — reverse to chronological
+  // ascending to match computeIndicators' expected order.
+  const ascending = [...rows].reverse();
+  const prices = ascending
+    .map(r => [ new Date(r.period+'T00:00:00Z').getTime(), Number(r.value) ])
+    .filter(p => Number.isFinite(p[1]));
+  if(prices.length < 2) throw new Error('EIA spot price returned too few usable rows');
+  // A single daily benchmark price has no associated volume figure at all
+  // (not even the "no data" case gold/oil's Twelve Data path had) — same
+  // flat placeholder so computeIndicators' volume-ratio factor stays neutral.
   const volumes = prices.map(p => [p[0], 1]);
   return { prices, volumes };
 }
@@ -855,7 +899,7 @@ function gradeSignalsOil(modeState, cfg, now){
 }
 
 async function runModeOil(mode, sharedOil){
-  const cfg = MODE_CONFIGS[mode];
+  const cfg = OIL_MODE_CONFIGS[mode]; // oil's own daily-scale config — see note above MODE_CONFIGS' shared use by ETH/gold
   let modeState = await supaGet(mode, 'oil');
   if(!modeState) modeState = freshModeStateOil();
   if(!modeState.volumeCache) modeState.volumeCache = [];
@@ -998,7 +1042,10 @@ async function main(){
   }
 
   // ---------- Oil (WTI/USD) — additive, independent of everything above ----------
-  if(TWELVEDATA_KEY){
+  // Gated on EIA_API_KEY, not TWELVEDATA_KEY — oil's price now comes from
+  // the EIA (see fetchOilPriceHistory above), so EIA_API_KEY is the one
+  // essential dependency for this whole pipeline.
+  if(EIA_API_KEY){
     let sharedOil = await loadSharedOil();
 
     if(!sharedOil.lastSmartMoneyCheckTs || now-sharedOil.lastSmartMoneyCheckTs>24*3600000){
@@ -1013,7 +1060,7 @@ async function main(){
       }catch(e){ console.error('oil COT check failed', e.message); }
     }
 
-    if(EIA_API_KEY && (!sharedOil.lastContextCheckTs || now-sharedOil.lastContextCheckTs>24*3600000)){
+    if(!sharedOil.lastContextCheckTs || now-sharedOil.lastContextCheckTs>24*3600000){
       try{
         const rows = await fetchOilInventory(EIA_API_KEY);
         const ctx = computeOilInventoryContextScore(rows);
@@ -1052,7 +1099,7 @@ async function main(){
       await runModeOil('day', sharedOil);
     }catch(e){ console.error('oil pipeline failed', e.message); }
   } else {
-    console.log('Skipping oil pipeline — TWELVEDATA_KEY not set');
+    console.log('Skipping oil pipeline — EIA_API_KEY not set');
   }
 }
 
