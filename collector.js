@@ -76,7 +76,7 @@ async function supaSet(mode, state, asset='eth'){
 async function loadShared(){
   const s = await supaGet('shared');
   return s || { lastWhaleScore:null, lastWhaleCheckTs:null, lastSentiment:null, lastSentimentCheckTs:null,
-    lastFearGreed:null, lastFundingRate:null, lastContextScore:null, lastContextCheckTs:null };
+    lastHeadlines:null, lastFearGreed:null, lastFundingRate:null, lastContextScore:null, lastContextCheckTs:null };
 }
 async function saveShared(shared){ await supaSet('shared', shared); }
 
@@ -213,6 +213,12 @@ async function fetchSentiment(){
 // on free-tier accounts. Instead we score sentiment from headlines we already fetch
 // for free from a public RSS feed — no API key, no signup, no auth needed at all.
 
+// Returns rich headline objects (title/url/source/ts), not just titles — the
+// front-end's "Recent headlines" section displays these straight from shared
+// state (see main()'s shared.lastHeadlines below) instead of fetching RSS
+// itself client-side. Browsers block that: RSS feeds generally don't send
+// Access-Control-Allow-Origin, confirmed for both this feed and gold/oil's
+// Al Jazeera/BBC feeds via a live header check.
 async function fetchHeadlinesForSentiment(){
   const res = await fetch('https://cointelegraph.com/rss/tag/ethereum', {
     headers: { 'User-Agent': 'Mozilla/5.0 (compatible; EthCorpusCollector/1.0)' }
@@ -220,19 +226,27 @@ async function fetchHeadlinesForSentiment(){
   if(!res.ok) throw new Error('rss fetch failed: '+res.status);
   const xml = await res.text();
   const itemBlocks = xml.match(/<item>[\s\S]*?<\/item>/g) || [];
-  const titles = itemBlocks.slice(0,10).map(block=>{
-    const m = block.match(/<title>([\s\S]*?)<\/title>/);
-    if(!m) return null;
-    return m[1].replace('<![CDATA[','').replace(']]>','').trim();
+  const headlines = itemBlocks.slice(0,10).map(block=>{
+    const titleM = block.match(/<title>([\s\S]*?)<\/title>/);
+    if(!titleM) return null;
+    const linkM = block.match(/<link>([\s\S]*?)<\/link>/);
+    const pubM = block.match(/<pubDate>([\s\S]*?)<\/pubDate>/);
+    const ts = pubM ? Date.parse(pubM[1].trim()) : NaN;
+    return {
+      title: titleM[1].replace('<![CDATA[','').replace(']]>','').trim(),
+      url: linkM ? linkM[1].replace('<![CDATA[','').replace(']]>','').trim() : null,
+      source: 'Cointelegraph',
+      ts: Number.isFinite(ts) ? ts : Date.now()
+    };
   }).filter(Boolean);
-  if(!titles.length) throw new Error('rss parse yielded no titles');
-  return titles;
+  if(!headlines.length) throw new Error('rss parse yielded no titles');
+  return headlines;
 }
 
 async function fetchSentimentGemini(apiKey){
   const headlines = await fetchHeadlinesForSentiment();
   if(!headlines.length) return null;
-  const headlineText = headlines.map(t=>`- ${t}`).join('\n');
+  const headlineText = headlines.map(h=>`- ${h.title}`).join('\n');
   const prompt = `Here are recent Ethereum (ETH) news headlines:\n${headlineText}\n\nBased only on these headlines, respond with ONLY a JSON object, no markdown fences, no other text: {"score": <number from -1 (very bearish) to 1 (very bullish)>, "summary": "<one sentence, under 20 words>"}`;
 
   const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/interactions?key=${apiKey}`, {
@@ -247,7 +261,8 @@ async function fetchSentimentGemini(apiKey){
   if(!textPart) return null;
   const clean = textPart.text.replace(/```json|```/g,'').trim();
   const match = clean.match(/\{[\s\S]*\}/);
-  return match ? JSON.parse(match[0]) : null;
+  const parsed = match ? JSON.parse(match[0]) : null;
+  return parsed ? { ...parsed, headlines } : null;
 }
 
 function checkConfluence(t,w,s,c){
@@ -434,7 +449,7 @@ function freshModeStateGold(){
 async function loadSharedGold(){
   const s = await supaGet('shared', 'gold');
   return s || { lastSmartMoneyScore:null, lastSmartMoneyCheckTs:null, lastSmartMoneyDetail:null,
-    lastSentiment:null, lastSentimentCheckTs:null, lastSentimentError:null };
+    lastSentiment:null, lastSentimentCheckTs:null, lastSentimentError:null, lastHeadlines:null };
 }
 async function saveSharedGold(shared){ await supaSet('shared', shared, 'gold'); }
 
@@ -513,8 +528,14 @@ const GOLD_SENTIMENT_FEEDS = [
   'https://feeds.bbci.co.uk/news/world/rss.xml'
 ];
 
+// Returns rich headline objects (title/url/source/ts), not just titles — see
+// fetchHeadlinesForSentiment's equivalent note above. Used both to build the
+// Gemini sentiment prompt (fetchGoldSentimentGemini below extracts .title)
+// and, via that function's return value, to populate the front-end's
+// "Recent headlines" section for gold/oil.
 async function fetchGeopoliticalHeadlines(){
-  const titles = [];
+  const headlines = [];
+  const feedSources = { [GOLD_SENTIMENT_FEEDS[0]]:'Al Jazeera', [GOLD_SENTIMENT_FEEDS[1]]:'BBC World' };
   for(const feedUrl of GOLD_SENTIMENT_FEEDS){
     try{
       const res = await fetch(feedUrl, { headers:{ 'User-Agent':'Mozilla/5.0 (compatible; EthCorpusCollector/1.0)' } });
@@ -522,18 +543,27 @@ async function fetchGeopoliticalHeadlines(){
       const xml = await res.text();
       const itemBlocks = xml.match(/<item>[\s\S]*?<\/item>/g) || [];
       itemBlocks.slice(0,10).forEach(block=>{
-        const m = block.match(/<title>([\s\S]*?)<\/title>/);
-        if(m) titles.push(m[1].replace('<![CDATA[','').replace(']]>','').trim());
+        const titleM = block.match(/<title>([\s\S]*?)<\/title>/);
+        if(!titleM) return;
+        const linkM = block.match(/<link>([\s\S]*?)<\/link>/);
+        const pubM = block.match(/<pubDate>([\s\S]*?)<\/pubDate>/);
+        const ts = pubM ? Date.parse(pubM[1].trim()) : NaN;
+        headlines.push({
+          title: titleM[1].replace('<![CDATA[','').replace(']]>','').trim(),
+          url: linkM ? linkM[1].replace('<![CDATA[','').replace(']]>','').trim() : null,
+          source: feedSources[feedUrl] || 'World news',
+          ts: Number.isFinite(ts) ? ts : Date.now()
+        });
       });
     }catch(e){ console.error(`geopolitical rss fetch failed for ${feedUrl}:`, e.message); }
   }
-  if(!titles.length) throw new Error('geopolitical rss parse yielded no titles across both feeds');
-  return titles;
+  if(!headlines.length) throw new Error('geopolitical rss parse yielded no titles across both feeds');
+  return headlines.sort((a,b)=>b.ts-a.ts).slice(0,10);
 }
 
 async function fetchGoldSentimentGemini(apiKey){
   const headlines = await fetchGeopoliticalHeadlines();
-  const headlineText = headlines.map(t=>`- ${t}`).join('\n');
+  const headlineText = headlines.map(h=>`- ${h.title}`).join('\n');
   // Deliberately avoids naming specific conflict/political categories (war,
   // sanctions, etc.) in the prompt itself — Gemini's API gates certain
   // politically-sensitive content categories by requester region, returning
@@ -554,7 +584,8 @@ async function fetchGoldSentimentGemini(apiKey){
   if(!textPart) return null;
   const clean = textPart.text.replace(/```json|```/g,'').trim();
   const match = clean.match(/\{[\s\S]*\}/);
-  return match ? JSON.parse(match[0]) : null;
+  const parsed = match ? JSON.parse(match[0]) : null;
+  return parsed ? { ...parsed, headlines } : null;
 }
 
 // ---------- gold composite scoring: 3 factors (tech, smart money, sentiment) ----------
@@ -715,7 +746,7 @@ async function loadSharedOil(){
   const s = await supaGet('shared', 'oil');
   return s || { lastSmartMoneyScore:null, lastSmartMoneyCheckTs:null, lastSmartMoneyDetail:null,
     lastContextScore:null, lastContextCheckTs:null, lastInventoryDetail:null,
-    lastSentiment:null, lastSentimentCheckTs:null, lastSentimentError:null };
+    lastSentiment:null, lastSentimentCheckTs:null, lastSentimentError:null, lastHeadlines:null };
 }
 async function saveSharedOil(shared){ await supaSet('shared', shared, 'oil'); }
 
@@ -956,7 +987,11 @@ async function main(){
   if(GEMINI_API_KEY && (!shared.lastSentimentCheckTs || now-shared.lastSentimentCheckTs>4*3600000)){
     try{
       const result = await fetchSentimentGemini(GEMINI_API_KEY);
-      if(result){ shared.lastSentiment = result; shared.lastSentimentCheckTs = now; shared.lastSentimentError = null; }
+      if(result){
+        const { headlines, ...sentimentOnly } = result;
+        shared.lastSentiment = sentimentOnly; shared.lastHeadlines = headlines;
+        shared.lastSentimentCheckTs = now; shared.lastSentimentError = null;
+      }
     }catch(e){ console.error('sentiment check failed (gemini)', e.message); shared.lastSentimentError = String(e.message).slice(0,300); }
   } else if(ANTHROPIC_API_KEY && (!shared.lastSentimentCheckTs || now-shared.lastSentimentCheckTs>4*3600000)){
     try{
@@ -1010,7 +1045,11 @@ async function main(){
     if(GEMINI_API_KEY && (!sharedGold.lastSentimentCheckTs || now-sharedGold.lastSentimentCheckTs>4*3600000)){
       try{
         const result = await fetchGoldSentimentGemini(GEMINI_API_KEY);
-        if(result){ sharedGold.lastSentiment = result; sharedGold.lastSentimentCheckTs = now; sharedGold.lastSentimentError = null; }
+        if(result){
+          const { headlines, ...sentimentOnly } = result;
+          sharedGold.lastSentiment = sentimentOnly; sharedGold.lastHeadlines = headlines;
+          sharedGold.lastSentimentCheckTs = now; sharedGold.lastSentimentError = null;
+        }
       }catch(e){
         const msg = String(e.message);
         const isRegionGated = /not available in your current location/i.test(msg);
@@ -1077,7 +1116,11 @@ async function main(){
         // Reuses gold's exact sentiment function — same RSS sources, same
         // reworded prompt (avoids Gemini's region-gated content category).
         const result = await fetchGoldSentimentGemini(GEMINI_API_KEY);
-        if(result){ sharedOil.lastSentiment = result; sharedOil.lastSentimentCheckTs = now; sharedOil.lastSentimentError = null; }
+        if(result){
+          const { headlines, ...sentimentOnly } = result;
+          sharedOil.lastSentiment = sentimentOnly; sharedOil.lastHeadlines = headlines;
+          sharedOil.lastSentimentCheckTs = now; sharedOil.lastSentimentError = null;
+        }
       }catch(e){
         const msg = String(e.message);
         const isRegionGated = /not available in your current location/i.test(msg);

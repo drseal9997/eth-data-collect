@@ -61,6 +61,16 @@
   .btn-group button.active{color:var(--amber);background:rgba(217,164,65,0.08);}
 
   .weights{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--line);margin-bottom:6px;}
+  /* Gold has only 3 factors (no market-context equivalent) — .three-col
+     reflows the grid evenly instead of leaving an empty 4th slot. Scoped to
+     min-width so it never fights the mobile single-column rule below. */
+  @media (min-width:481px){
+    .weights.three-col{grid-template-columns:repeat(3,1fr);}
+    /* :last-child targets the DOM-last cell (context, hidden for 3-factor
+       assets) regardless of display:none, so the visually-last cell (3rd,
+       sentiment) needs its own border removed explicitly here. */
+    .weights.three-col div.cell:nth-child(3){border-right:none;}
+  }
   .weights div.cell{padding:14px;border-right:1px solid var(--line);}
   .weights div.cell:last-child{border-right:none;}
   .weights .label{color:var(--dim);font-size:11.5px;margin-bottom:4px;}
@@ -190,6 +200,9 @@
     .weights{grid-template-columns:1fr;}
     .weights div.cell{border-right:none;border-bottom:1px solid var(--line);}
     .weights div.cell:last-child{border-bottom:none;}
+    /* Same DOM-vs-visual-last mismatch as the desktop rule above, for the
+       stacked mobile layout. */
+    .weights.three-col div.cell:nth-child(3){border-bottom:none;}
 
     /* The signal log's 7 columns don't fit; scroll horizontally instead of
        squeezing (see .table-scroll on the wrapping div) rather than overflowing
@@ -288,6 +301,11 @@
     <div class="topbar-actions">
       <div class="auth-area mono" id="authArea"></div>
       <button class="earn-nav-btn mono" id="earnNavBtn" type="button">Earn with EthCorpus</button>
+      <div class="mode-toggle" id="assetToggle">
+        <button class="mode-btn active" id="btnAssetEth" data-asset="eth">ETH</button>
+        <button class="mode-btn" id="btnAssetGold" data-asset="gold">GOLD</button>
+        <button class="mode-btn" id="btnAssetOil" data-asset="oil">OIL</button>
+      </div>
       <div class="mode-toggle">
         <button class="mode-btn active" id="btnSwing">Swing</button>
         <button class="mode-btn" id="btnDay">Day-trade</button>
@@ -322,20 +340,20 @@
       <div class="skeleton" style="flex:1;height:55%;"></div><div class="skeleton" style="flex:1;height:70%;"></div><div class="skeleton" style="flex:1;height:40%;"></div><div class="skeleton" style="flex:1;height:85%;"></div><div class="skeleton" style="flex:1;height:60%;"></div><div class="skeleton" style="flex:1;height:75%;"></div><div class="skeleton" style="flex:1;height:50%;"></div><div class="skeleton" style="flex:1;height:65%;"></div><div class="skeleton" style="flex:1;height:45%;"></div><div class="skeleton" style="flex:1;height:80%;"></div>
     </div>
   </div>
-  <div class="chart-box" style="height:70px;padding:8px 16px;">
+  <div class="chart-box" id="volumeChartBox" style="height:70px;padding:8px 16px;">
     <canvas id="volumeChart"></canvas>
     <div id="volumeSkeleton" style="position:absolute;inset:8px 16px;display:flex;align-items:flex-end;gap:4px;">
       <div class="skeleton" style="flex:1;height:40%;"></div><div class="skeleton" style="flex:1;height:70%;"></div><div class="skeleton" style="flex:1;height:30%;"></div><div class="skeleton" style="flex:1;height:60%;"></div><div class="skeleton" style="flex:1;height:50%;"></div><div class="skeleton" style="flex:1;height:80%;"></div><div class="skeleton" style="flex:1;height:35%;"></div><div class="skeleton" style="flex:1;height:55%;"></div>
     </div>
   </div>
-  <div class="chart-box" style="height:110px;padding:8px 16px;position:relative;">
+  <div class="chart-box" id="indicatorChartBox" style="height:110px;padding:8px 16px;position:relative;">
     <canvas id="indicatorChart"></canvas>
     <div id="indicatorSkeleton" style="position:absolute;inset:8px 16px;">
       <div class="skeleton" style="height:35%;margin-bottom:10px;"></div>
       <div class="skeleton" style="height:35%;"></div>
     </div>
   </div>
-  <div class="chart-controls">
+  <div class="chart-controls" id="chartControls">
     <div class="btn-group" id="timeframeGroup">
       <button data-tf="1H">1H</button>
       <button data-tf="6H">6H</button>
@@ -353,7 +371,7 @@
     </div>
   </div>
   <div class="stat-line" id="chartEchoNote" style="margin:-6px 0 14px;"></div>
-  <div class="stat-line" style="margin:-10px 0 14px;display:flex;gap:16px;">
+  <div class="stat-line" id="smaToggleRow" style="margin:-10px 0 14px;display:flex;gap:16px;">
     <label class="mono" style="cursor:pointer;display:flex;align-items:center;gap:5px;">
       <input type="checkbox" id="smaShortToggle" checked><span id="smaShortLabel">SMA short</span>
     </label>
@@ -401,7 +419,7 @@
   <div id="analogCards"></div>
 
   <div class="section-head">
-    <h2>Recent ETH headlines</h2>
+    <h2 id="newsSectionTitle">Recent ETH headlines</h2>
     <span class="stat-line" id="newsTs"></span>
   </div>
   <ul class="news-list" id="newsList"></ul>
@@ -581,12 +599,57 @@ function updateCountdown(){
 updateCountdown();
 setInterval(updateCountdown, 1000);
 
-const MODE_HORIZON_LABELS = {
-  swing: [['h1','1h'],['h24','24h'],['d7','7d']],
-  day: [['m15','15m'],['h1','1h'],['h4','4h']]
-};
 const MODE_LABELS_SHORT = { swing:'Swing', day:'Day-trade' };
+const ASSET_LABELS = { eth:'ETH', gold:'GOLD', oil:'OIL' };
 
+// Used only as a placeholder for the log table's column headers when an
+// asset/mode has no logged signals yet to read real horizon keys from (see
+// horizonKeyToLabel below, which is the actual source of truth once data
+// exists). Mirrors each asset's own horizon config in collector.js
+// (MODE_CONFIGS for ETH/gold, OIL_MODE_CONFIGS for oil).
+const DEFAULT_HORIZON_LABELS = {
+  eth:  { swing:['1h','24h','7d'], day:['15m','1h','4h'] },
+  gold: { swing:['1h','24h','7d'], day:['15m','1h','4h'] },
+  oil:  { swing:['1d','7d','30d'], day:['1d','3d','7d'] }
+};
+
+// Per-asset factor metadata for the weights panel: which weight key backs
+// the "factor 2" slot (whale flow for ETH, CFTC smart-money for gold/oil),
+// its label/description, the sentiment description, and whether this asset
+// even has a 4th (context) factor at all — gold doesn't (3-factor asset).
+const ASSET_FACTORS = {
+  eth: {
+    factor2Key:'whale', factor2Label:'Whale flow',
+    factor2Desc:'Large wallets moving ETH to or from exchanges — often a sign of buying or selling pressure ahead.',
+    sentDesc:'Recent news and social media mood around ETH.',
+    hasContext:true, contextLabel:'Market context',
+    contextDesc:'Broader crypto mood (Fear & Greed Index) and futures funding rates.'
+  },
+  gold: {
+    factor2Key:'smartMoney', factor2Label:'Smart money',
+    factor2Desc:'CFTC Commitment of Traders — commercial hedgers’ net positioning (bullion banks, miners), read contrarian to speculators.',
+    sentDesc:'Geopolitical risk sentiment from world-news headlines (Al Jazeera, BBC World).',
+    hasContext:false
+  },
+  oil: {
+    factor2Key:'smartMoney', factor2Label:'Smart money',
+    factor2Desc:'CFTC Commitment of Traders — commercial hedgers’ net positioning, read contrarian to speculators.',
+    sentDesc:'Geopolitical risk sentiment from world-news headlines (Al Jazeera, BBC World).',
+    hasContext:true, contextLabel:'Inventory',
+    contextDesc:'EIA weekly U.S. crude oil inventory vs. its recent trend — falling stocks bullish, rising bearish.'
+  }
+};
+
+// Converts a horizon key like 'h24', 'd7', or 'm15' into a display label
+// ('24h', '7d', '15m') — works for any asset's horizon keys generically
+// (ETH/gold use m/h/d; oil's OIL_MODE_CONFIGS uses day-based keys only)
+// instead of a hardcoded per-asset lookup table.
+function horizonKeyToLabel(key){
+  const m = key.match(/^([a-z]+)(\d+)$/i);
+  return m ? m[2]+m[1] : key;
+}
+
+let currentAsset = 'eth';
 let currentMode = 'swing';
 let chart = null;
 let chartType = 'line';
@@ -940,6 +1003,10 @@ function hideChartSkeletons(){
 }
 
 async function renderPriceChart(){
+  // ETH-only — the live CoinGecko candle/timeframe chart below has no
+  // equivalent for gold/oil (see renderSimplePriceChart, used instead for
+  // those assets via refresh()). Everything past this line is unchanged.
+  if(currentAsset !== 'eth') return;
   const noteEl = document.getElementById('chartEchoNote');
   const myRequestId = ++chartRequestId;
   if(noteEl) noteEl.textContent = 'Loading chart...';
@@ -1063,6 +1130,60 @@ async function renderPriceChart(){
   }catch(e){ console.error('chart load failed', e); }
 }
 
+// Shows/hides the ETH-only chart controls (timeframe picker, candle toggle,
+// reset-zoom, SMA toggles, volume/RSI-MACD strips) depending on the selected
+// asset — gold/oil don't have a live-browsing price API, so none of these
+// apply to them (see renderSimplePriceChart below).
+function setChartUIForAsset(asset){
+  const isEth = asset === 'eth';
+  document.getElementById('chartControls').style.display = isEth ? '' : 'none';
+  document.getElementById('smaToggleRow').style.display = isEth ? '' : 'none';
+  document.getElementById('volumeChartBox').style.display = isEth ? '' : 'none';
+  document.getElementById('indicatorChartBox').style.display = isEth ? '' : 'none';
+  document.getElementById('zoomOverlay').style.display = isEth ? '' : 'none';
+  if(!isEth){
+    document.getElementById('resetZoomBtn').style.display = 'none';
+    zoomRange = null;
+  }
+}
+
+// Gold/oil have no free equivalent to CoinGecko's live OHLC endpoint, so
+// this renders whatever history is already sitting in that asset's own
+// Supabase priceCache (the same array the pattern-matching section below
+// already uses) as a plain line — no timeframe picker, no candles, no zoom,
+// since none of that is actually available for these two assets.
+function renderSimplePriceChart(priceCache, assetLabel){
+  hideChartSkeletons();
+  document.getElementById('candleChart').style.display = 'none';
+  document.getElementById('priceChart').style.display = 'block';
+  const noteEl = document.getElementById('chartEchoNote');
+
+  if(!priceCache || priceCache.length < 2){
+    if(chart){ chart.destroy(); chart = null; }
+    if(noteEl) noteEl.textContent = `Not enough collected ${assetLabel} price history yet to chart.`;
+    return;
+  }
+  if(noteEl) noteEl.textContent = `Built from ${assetLabel}'s collected price history, not a live feed — timeframe browsing and candles aren't available for this asset.`;
+
+  const labels = priceCache.map(p => new Date(p[0]).toLocaleDateString(undefined,{month:'short',day:'numeric'}));
+  const closes = priceCache.map(p=>p[1]);
+
+  const ctx = document.getElementById('priceChart').getContext('2d');
+  if(chart) chart.destroy();
+  chart = new Chart(ctx, {
+    type:'line',
+    data:{ labels, datasets:[{ label:assetLabel, data:closes, borderColor:'#D9A441', borderWidth:1.5, pointRadius:0, tension:0.1 }] },
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{ display:false } },
+      scales:{
+        x:{ ticks:{ color:'#8A93A6', maxTicksLimit:8, font:{family:'IBM Plex Mono', size:10} }, grid:{ color:'#2A2F3A' } },
+        y:{ ticks:{ color:'#8A93A6', font:{family:'IBM Plex Mono', size:10} }, grid:{ color:'#2A2F3A' } }
+      }
+    }
+  });
+}
+
 document.querySelectorAll('#timeframeGroup button').forEach(btn=>{
   btn.addEventListener('click', ()=>{
     document.querySelectorAll('#timeframeGroup button').forEach(b=>b.classList.remove('active'));
@@ -1173,9 +1294,9 @@ document.querySelectorAll('#chartTypeGroup button').forEach(btn=>{
   document.getElementById('smaLongToggle').addEventListener('change', renderPriceChart);
 })();
 
-async function fetchModeState(mode){
+async function fetchModeState(mode, asset='eth'){
   if(!supabaseAccessToken) return null; // no session yet — caller shows a sign-in state instead of treating this as "no data"
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/signal_state?mode=eq.${mode}&select=state`, {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/signal_state?asset=eq.${asset}&mode=eq.${mode}&select=state`, {
     // apikey identifies the project as usual; Authorization now carries the
     // signed-in user's own token (not the static key) so RLS's
     // auth.role() = 'authenticated' check actually passes.
@@ -1186,29 +1307,26 @@ async function fetchModeState(mode){
   return Array.isArray(rows) && rows.length ? rows[0].state : null;
 }
 
-async function fetchHeadlines(){
-  try{
-    const res = await fetch('https://min-api.cryptocompare.com/data/v2/news/?categories=ETH&excludeCategories=Sponsored&lang=EN');
-    const data = await res.json();
-    if(!data.Data) return [];
-    return data.Data.slice(0,8).map(a=>({
-      title:a.title, url:a.url, source:a.source_info?a.source_info.name:a.source, ts:Number(a.published_on)*1000
-    }));
-  }catch(e){ return []; }
-}
-
-function renderNews(headlines){
+// Headlines come from shared.lastHeadlines (set by refresh() below), cached
+// server-side in collector.js from the same RSS feeds it already uses for
+// sentiment — not fetched here client-side. Most RSS feeds (this project's
+// included) don't send Access-Control-Allow-Origin, so a browser-side fetch
+// to them is blocked; fetching server-side and caching sidesteps that.
+function renderNews(headlines, checkedTs){
   const list = document.getElementById('newsList');
   const empty = document.getElementById('newsEmpty');
-  if(!headlines.length){ empty.style.display='block'; list.innerHTML=''; return; }
+  if(!headlines || !headlines.length){
+    empty.textContent = 'No headlines available right now — this list is refreshed periodically by the background data collector, so try checking back shortly.';
+    empty.style.display='block'; list.innerHTML=''; document.getElementById('newsTs').textContent = ''; return;
+  }
   empty.style.display='none';
   list.innerHTML = headlines.map(n=>`
     <li><a href="${n.url}" target="_blank" rel="noopener">${n.title}</a>
     <div class="meta mono">${n.source} · ${new Date(n.ts).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</div></li>`).join('');
-  document.getElementById('newsTs').textContent = 'updated ' + new Date().toLocaleTimeString();
+  document.getElementById('newsTs').textContent = checkedTs ? 'updated ' + new Date(checkedTs).toLocaleString() : '';
 }
 
-function renderVerdict(latest, mode, needsSignIn){
+function renderVerdict(latest, mode, needsSignIn, assetLabel){
   const box = document.getElementById('verdictBox');
   const word = document.getElementById('verdictWord');
   const sub = document.getElementById('verdictSub');
@@ -1256,7 +1374,7 @@ function renderVerdict(latest, mode, needsSignIn){
   sub.textContent = message;
   const rawSuffix = rawConf !== conf ? ` (raw ${rawConf}%)` : '';
   meta.textContent = `Confidence: ${conf}%${rawSuffix} · as of ${new Date(latest.ts).toLocaleString()}`;
-  price.innerHTML = `ETH <b>$${latest.price.toFixed(2)}</b>`;
+  price.innerHTML = `${assetLabel || 'ETH'} <b>$${latest.price.toFixed(2)}</b>`;
 }
 
 function buildSparkline(seriesNorm, splitIndex, w, h, afterColor){
@@ -1382,9 +1500,34 @@ function renderAnalogs(priceCache, mode, latestSignal, latestConfidence){
   }).join('');
 }
 
-function renderLogAndWeights(state, mode){
-  const horizons = MODE_HORIZON_LABELS[mode];
-  document.querySelectorAll('#logHead th').forEach((th,i)=>{ if(i>=4) th.textContent = horizons[i-4][1]; });
+function renderLogAndWeights(state, mode, asset){
+  const meta = ASSET_FACTORS[asset] || ASSET_FACTORS.eth;
+
+  // Factor 2 (whale flow / CFTC smart money) and factor 4 (market context /
+  // EIA inventory) labels and descriptions adapt per asset. Gold has no 4th
+  // factor at all, so its whole cell is hidden rather than shown empty.
+  const factor2Cell = document.getElementById('wWhale').closest('.cell');
+  factor2Cell.querySelector('.label').textContent = meta.factor2Label;
+  factor2Cell.querySelector('.desc').textContent = meta.factor2Desc;
+  document.getElementById('wSent').closest('.cell').querySelector('.desc').textContent = meta.sentDesc;
+  const contextCell = document.getElementById('wContext').closest('.cell');
+  contextCell.style.display = meta.hasContext ? '' : 'none';
+  document.querySelector('.weights').classList.toggle('three-col', !meta.hasContext);
+  if(meta.hasContext){
+    contextCell.querySelector('.label').textContent = meta.contextLabel;
+    contextCell.querySelector('.desc').textContent = meta.contextDesc;
+  }
+
+  // Horizon keys/labels come from the most recently logged signal's own data
+  // (not a hardcoded per-asset table) — ETH/gold log hour-based keys, oil
+  // logs day-based keys (OIL_MODE_CONFIGS), and this adapts to either. Falls
+  // back to a placeholder set only when there's no logged data yet to read.
+  const log = (state && state.log) || [];
+  const sorted = [...log].sort((a,b)=>b.ts-a.ts);
+  const horizons = sorted.length
+    ? Object.keys(sorted[0].horizons || {}).map(k=>[k, horizonKeyToLabel(k)])
+    : ((DEFAULT_HORIZON_LABELS[asset] && DEFAULT_HORIZON_LABELS[asset][mode]) || DEFAULT_HORIZON_LABELS.eth[mode] || []).map(l=>[l,l]);
+  document.querySelectorAll('#logHead th').forEach((th,i)=>{ if(i>=4 && horizons[i-4]) th.textContent = horizons[i-4][1]; });
 
   // Once real data arrives (even a "—" fallback), the skeleton placeholder classes
   // are no longer wanted — they'd otherwise keep pulsing forever with hidden text.
@@ -1393,19 +1536,17 @@ function renderLogAndWeights(state, mode){
 
   const w = (state && state.weights) || {};
   document.getElementById('wTech').textContent = w.tech!=null ? Math.round(w.tech*100)+'%' : '—';
-  document.getElementById('wWhale').textContent = w.whale!=null ? Math.round(w.whale*100)+'%' : '—';
+  document.getElementById('wWhale').textContent = w[meta.factor2Key]!=null ? Math.round(w[meta.factor2Key]*100)+'%' : '—';
   document.getElementById('wSent').textContent = w.sentiment!=null ? Math.round(w.sentiment*100)+'%' : '—';
-  document.getElementById('wContext').textContent = w.context!=null ? Math.round(w.context*100)+'%' : '—';
+  document.getElementById('wContext').textContent = (meta.hasContext && w.context!=null) ? Math.round(w.context*100)+'%' : '—';
 
-  const log = (state && state.log) || [];
   const body = document.getElementById('logBody');
   const empty = document.getElementById('logEmpty');
-  const sorted = [...log].sort((a,b)=>b.ts-a.ts);
   if(!sorted.length){
     // Explicitly reset the message each time (rather than relying on the static HTML
     // default) so this can't ever get stuck showing a leftover error/fallback string
     // from some other code path.
-    empty.textContent = `No ${MODE_LABELS_SHORT[mode] || mode} signals logged yet — the collector runs continuously in the background and logs a new entry on its regular schedule, so the first one should appear shortly.`;
+    empty.textContent = `No ${ASSET_LABELS[asset] || asset} ${MODE_LABELS_SHORT[mode] || mode} signals logged yet — the collector runs continuously in the background and logs a new entry on its regular schedule, so the first one should appear shortly.`;
     empty.style.display='block'; body.innerHTML='';
   }
   else{
@@ -1453,13 +1594,13 @@ async function refresh(){
     return;
   }
   try{
-    const state = await fetchModeState(currentMode);
-    const shared = await fetchModeState('shared');
+    const state = await fetchModeState(currentMode, currentAsset);
+    const shared = await fetchModeState('shared', currentAsset);
     const log = (state && state.log) || [];
     const latest = [...log].sort((a,b)=>b.ts-a.ts)[0] || null;
     currentLog = log;
 
-    renderVerdict(latest, currentMode);
+    renderVerdict(latest, currentMode, false, ASSET_LABELS[currentAsset]);
     // Use the calibrated confidence here too, so the "combined confidence" blend
     // on the pattern-match panel is built from the same trustworthy number shown
     // in the verdict box above, not the raw uncalibrated score.
@@ -1467,13 +1608,20 @@ async function refresh(){
       ? ((latest.calibratedConfidence!=null && Number.isFinite(latest.calibratedConfidence)) ? latest.calibratedConfidence : latest.confidence)
       : null;
     if(state && state.priceCache) renderAnalogs(state.priceCache, currentMode, latest?latest.signal:null, latestConfForBlend);
-    renderLogAndWeights(state, currentMode);
+    renderLogAndWeights(state, currentMode, currentAsset);
+    if(currentAsset !== 'eth') renderSimplePriceChart(state && state.priceCache, ASSET_LABELS[currentAsset]);
+
+    const newsTitleEl = document.getElementById('newsSectionTitle');
+    if(newsTitleEl) newsTitleEl.textContent = `Recent ${ASSET_LABELS[currentAsset]} headlines`;
+    renderNews(shared && shared.lastHeadlines, shared && shared.lastSentimentCheckTs);
 
     const sentLiveEl = document.getElementById('sentLive');
     if(shared && shared.lastSentiment){
       sentLiveEl.textContent = `${shared.lastSentiment.score>0?'+':''}${shared.lastSentiment.score} — "${shared.lastSentiment.summary}"`;
     } else {
-      sentLiveEl.textContent = 'Not checked yet — sentiment is checked periodically from recent ETH news headlines.';
+      sentLiveEl.textContent = currentAsset === 'eth'
+        ? 'Not checked yet — sentiment is checked periodically from recent ETH news headlines.'
+        : 'Not checked yet — sentiment is checked periodically from recent world-news headlines (Al Jazeera, BBC World).';
     }
 
     const aiTextEl = document.getElementById('aiCommentaryText');
@@ -1497,6 +1645,18 @@ if(earnNavBtn) earnNavBtn.addEventListener('click', ()=>{
   if(target) target.scrollIntoView({ behavior:'smooth', block:'start' });
 });
 
+setChartUIForAsset(currentAsset); // no-op at load (already eth-shaped by default), kept for clarity/consistency
+document.querySelectorAll('#assetToggle .mode-btn').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    const asset = btn.dataset.asset;
+    if(asset === currentAsset) return;
+    currentAsset = asset;
+    document.querySelectorAll('#assetToggle .mode-btn').forEach(b=>b.classList.toggle('active', b===btn));
+    setChartUIForAsset(asset);
+    refresh().then(()=>{ if(currentAsset==='eth') renderPriceChart(); });
+  });
+});
+
 document.getElementById('btnSwing').addEventListener('click', ()=>{
   currentMode='swing';
   document.getElementById('btnSwing').classList.add('active');
@@ -1511,10 +1671,8 @@ document.getElementById('btnDay').addEventListener('click', ()=>{
 });
 
 refresh().then(()=>{ renderPriceChart(); maybeStartOnboarding(); }); // ensure currentLog is populated before the first chart draw, so markers appear immediately
-fetchHeadlines().then(renderNews);
 setInterval(refresh, 60000);
 setInterval(renderPriceChart, 60000);
-setInterval(()=>fetchHeadlines().then(renderNews), 15*60000);
 
 // Redraw the chart/volume/RSI-MACD canvases on resize or orientation change —
 // their pixel dimensions are computed from the container's width at draw time,
