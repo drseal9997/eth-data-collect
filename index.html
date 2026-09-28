@@ -185,6 +185,14 @@
   .affiliate-cta a, .affiliate-cta button.link{color:var(--amber);background:none;border:none;padding:0;font:inherit;cursor:pointer;text-decoration:underline;}
   .coming-soon .affiliate-cta{border-color:var(--line);background:rgba(217,164,65,0.04);max-width:520px;margin-top:18px;text-align:left;}
 
+  .earn-section{border:1px solid var(--amber);padding:16px 18px;margin-top:14px;background:rgba(217,164,65,0.06);}
+  .coming-soon .earn-section{max-width:520px;text-align:left;}
+  .earn-section .earn-heading{color:var(--amber);font-size:13px;letter-spacing:1.5px;margin-bottom:8px;}
+  .earn-section .earn-body{color:var(--text);font-size:12.5px;line-height:1.6;margin-bottom:8px;}
+  .earn-section .earn-body b{color:var(--amber);}
+  .earn-section .earn-cta{color:var(--dim);font-size:12.5px;line-height:1.6;}
+  .earn-section .earn-cta button.link{color:var(--amber);background:none;border:none;padding:0;font:inherit;cursor:pointer;text-decoration:underline;}
+
   .affiliate-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:2100;display:none;align-items:center;justify-content:center;padding:20px;}
   .affiliate-modal{background:var(--panel);border:1px solid var(--line);max-width:420px;width:100%;padding:22px 24px;position:relative;max-height:90vh;overflow-y:auto;}
   .affiliate-modal h3{margin:0 0 6px;font-size:16px;font-weight:600;color:var(--amber);}
@@ -224,6 +232,11 @@
   </div>
   <div class="launch-line mono">Launching 27 September 2026 · 06:10 (UK time)</div>
   <div class="launch-line mono" style="margin-top:8px;color:var(--amber);">Free at launch. The early traders using it now won't be paying later.</div>
+  <div class="earn-section">
+    <div class="earn-heading mono">EARN WITH ETHCORPUS</div>
+    <div class="earn-body">Become an EthCorpus affiliate and earn <b><span id="earnAmount1">£10</span></b> for every paying subscriber who signs up through your unique referral link or code. Affiliate access opens to subscribers once our paid plans launch.</div>
+    <div class="earn-cta">Apply now to join the waitlist — early applicants get first pick of terms once the program goes live. <button type="button" class="link" id="affiliateOpenBtn3">Apply to be an early affiliate</button></div>
+  </div>
   <div class="affiliate-cta">Interested in promoting EthCorpus? <button type="button" class="link" id="affiliateOpenBtn1">Apply to be an early affiliate</button></div>
 </div>
 
@@ -374,6 +387,11 @@
     The verdict above reflects the current composite signal, not a guarantee. Pattern matches show what happened after similar historical price shapes in the available data — a base rate for context, not a prediction of what will happen this time. Refreshes every 60 seconds. Not financial advice.
   </div>
 
+  <div class="earn-section">
+    <div class="earn-heading mono">EARN WITH ETHCORPUS</div>
+    <div class="earn-body">Become an EthCorpus affiliate and earn <b><span id="earnAmount2">£10</span></b> for every paying subscriber who signs up through your unique referral link or code. Affiliate access opens to subscribers once our paid plans launch.</div>
+    <div class="earn-cta">Apply now to join the waitlist — early applicants get first pick of terms once the program goes live. <button type="button" class="link" id="affiliateOpenBtn4">Apply to be an early affiliate</button></div>
+  </div>
   <div class="affiliate-cta">Interested in promoting EthCorpus? <button type="button" class="link" id="affiliateOpenBtn2">Apply to be an early affiliate</button></div>
 </div>
 </div>
@@ -458,6 +476,24 @@ function propagateQueryToNav(){
   });
 }
 propagateQueryToNav();
+
+// Best-effort UK vs. rest-of-world guess for the affiliate payout currency shown
+// in the "Earn with EthCorpus" section — display-only, so a browser-settings
+// guess (no network call, nothing to rate-limit or break) is an intentional
+// trade-off over IP geolocation.
+(function setEarnCurrency(){
+  let isUK = false;
+  try{
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+    isUK = tz.startsWith('Europe/London');
+    if(!isUK) isUK = (navigator.language || '').startsWith('en-GB');
+  }catch(e){ isUK = false; }
+  const amount = isUK ? '£10' : '$10';
+  ['earnAmount1','earnAmount2'].forEach(id=>{
+    const el = document.getElementById(id);
+    if(el) el.textContent = amount;
+  });
+})();
 
 function updateCountdown(){
   if(checkLaunch()) return;
@@ -1544,8 +1580,12 @@ if('serviceWorker' in navigator){
 
   const openBtn1 = document.getElementById('affiliateOpenBtn1');
   const openBtn2 = document.getElementById('affiliateOpenBtn2');
+  const openBtn3 = document.getElementById('affiliateOpenBtn3');
+  const openBtn4 = document.getElementById('affiliateOpenBtn4');
   if(openBtn1) openBtn1.addEventListener('click', openModal);
   if(openBtn2) openBtn2.addEventListener('click', openModal);
+  if(openBtn3) openBtn3.addEventListener('click', openModal);
+  if(openBtn4) openBtn4.addEventListener('click', openModal);
   document.getElementById('affiliateCloseBtn').addEventListener('click', closeModal);
   overlay.addEventListener('click', (e)=>{ if(e.target === overlay) closeModal(); });
   document.addEventListener('keydown', (e)=>{ if(e.key==='Escape' && overlay.style.display==='flex') closeModal(); });
