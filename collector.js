@@ -8,6 +8,7 @@ const ETHERSCAN_KEY = process.env.ETHERSCAN_KEY || null;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || null;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || null;
 const TWELVEDATA_KEY = process.env.TWELVEDATA_KEY || null;
+const EIA_API_KEY = process.env.EIA_API_KEY || null;
 
 const LEARNING_RATE = 0.04;
 const CAL_DECAY = 0.98;
@@ -665,6 +666,237 @@ async function runModeGold(mode, sharedGold){
   return modeState;
 }
 
+// =====================================================================
+// Oil (WTI/USD) — additive parallel pipeline, following the same pattern
+// as gold above. Unlike gold, oil gets a genuine 4-factor composite (tech,
+// COT smart-money, EIA inventory context, geopolitical sentiment) — the
+// same shape as ETH's computeComposite, just with oil's own factor names.
+// Does not modify anything in the ETH or gold pipelines above; stores its
+// state under signal_state's asset='oil'.
+// =====================================================================
+
+function freshModeStateOil(){
+  return {
+    weights:{tech:0.4, smartMoney:0.25, sentiment:0.15, context:0.2},
+    log:[], lastLogTs:null, priceCache:[], volumeCache:[],
+    calibration: CAL_BUCKETS.map(([min,max])=>({min,max,correct:0,total:0})),
+    lastTechDir:0
+  };
+}
+
+async function loadSharedOil(){
+  const s = await supaGet('shared', 'oil');
+  return s || { lastSmartMoneyScore:null, lastSmartMoneyCheckTs:null, lastSmartMoneyDetail:null,
+    lastContextScore:null, lastContextCheckTs:null, lastInventoryDetail:null,
+    lastSentiment:null, lastSentimentCheckTs:null, lastSentimentError:null };
+}
+async function saveSharedOil(shared){ await supaSet('shared', shared, 'oil'); }
+
+// ---------- oil price: Twelve Data time_series (WTI/USD) ----------
+const OIL_TD_INTERVAL = { swing:'1h', day:'15min' };
+const OIL_TD_OUTPUTSIZE = { swing:2160, day:300 };
+
+async function fetchOilPriceHistory(mode){
+  const interval = OIL_TD_INTERVAL[mode];
+  const outputsize = OIL_TD_OUTPUTSIZE[mode];
+  const url = `https://api.twelvedata.com/time_series?symbol=WTI/USD&interval=${interval}&outputsize=${outputsize}&order=asc&timezone=UTC&apikey=${TWELVEDATA_KEY}`;
+  const res = await fetch(url);
+  const data = await res.json();
+  if(data.status === 'error' || !Array.isArray(data.values)){
+    throw new Error(`Twelve Data error (oil): ${JSON.stringify(data).slice(0,300)}`);
+  }
+  const prices = data.values.map(v => [ new Date(v.datetime.replace(' ','T')+'Z').getTime(), Number(v.close) ]);
+  // Same placeholder-volume approach as gold — WTI/USD spot quote has no
+  // meaningful volume from Twelve Data.
+  const volumes = prices.map(p => [p[0], 1]);
+  return { prices, volumes };
+}
+
+// ---------- oil "smart money" factor: CFTC Commitment of Traders ----------
+// Same dataset (COT_DATASET_URL, defined above for gold) and same
+// commercial-hedgers-net-position convention: net long relative to its own
+// trailing ~1-year range is bullish, net short is bearish. Verified against
+// the live dataset that "WTI-PHYSICAL - NEW YORK MERCANTILE EXCHANGE" is the
+// current name for the flagship NYMEX WTI contract (it's the highest-open-
+// interest crude oil row in the dataset; the older "CRUDE OIL, LIGHT SWEET"
+// naming stopped updating in Feb 2022).
+const COT_OIL_MARKET_NAME = "WTI-PHYSICAL - NEW YORK MERCANTILE EXCHANGE";
+
+async function fetchOilCOT(){
+  const where = encodeURIComponent(`market_and_exchange_names='${COT_OIL_MARKET_NAME}'`);
+  const url = `${COT_DATASET_URL}?$where=${where}&$order=report_date_as_yyyy_mm_dd DESC&$limit=52`;
+  const res = await fetch(url);
+  if(!res.ok) throw new Error(`CFTC COT fetch failed (oil): ${res.status}`);
+  const rows = await res.json();
+  if(!Array.isArray(rows) || !rows.length) throw new Error('CFTC COT returned no rows for oil');
+  return rows;
+}
+
+function computeOilSmartMoneyScore(rows){
+  const netSeries = rows
+    .map(r => Number(r.comm_positions_long_all) - Number(r.comm_positions_short_all))
+    .filter(Number.isFinite);
+  if(!netSeries.length) return null;
+  const latestNet = netSeries[0];
+  const min = Math.min(...netSeries), max = Math.max(...netSeries);
+  const range = (max-min) || 1;
+  const score = Math.max(-1, Math.min(1, ((latestNet-min)/range)*2 - 1));
+  const latestRow = rows[0];
+  return {
+    score, netPosition: latestNet,
+    reportDate: latestRow.report_date_as_yyyy_mm_dd,
+    openInterest: Number(latestRow.open_interest_all) || null
+  };
+}
+
+// ---------- oil context factor: EIA weekly petroleum inventory ----------
+// Free, official EIA API (requires EIA_API_KEY). WCESTUS1 is the standard
+// series ID for "Weekly U.S. Ending Stocks excluding SPR of Crude Oil"
+// (thousand barrels). Endpoint path confirmed live (returns 403 needing a
+// key, not 404) — full response shape not verified against a real key from
+// here, so worth checking the first real run's logs.
+const EIA_OIL_INVENTORY_URL = 'https://api.eia.gov/v2/petroleum/stoc/wstk/data/';
+
+async function fetchOilInventory(apiKey){
+  const url = `${EIA_OIL_INVENTORY_URL}?api_key=${apiKey}&frequency=weekly&data[0]=value&facets[series][]=WCESTUS1&sort[0][column]=period&sort[0][direction]=desc&length=13`;
+  const res = await fetch(url);
+  if(!res.ok){ const t = await res.text(); throw new Error(`EIA inventory fetch failed: ${res.status} ${t.slice(0,200)}`); }
+  const data = await res.json();
+  const rows = data && data.response && Array.isArray(data.response.data) ? data.response.data : null;
+  if(!rows || !rows.length) throw new Error('EIA inventory response had no data rows');
+  return rows; // most-recent first (period desc), up to 13 weekly points (~3 months)
+}
+
+// Falling inventories (below their own recent trailing average) are
+// typically bullish for oil price; rising inventories (above average) are
+// bearish — hence the sign flip below. Deviation is normalized against a 3%
+// move from the trailing average: U.S. commercial crude stocks run roughly
+// 400-450M barrels, so a 3% swing (~12-13M bbl) is a historically large
+// weekly deviation from trend.
+function computeOilInventoryContextScore(rows){
+  const series = rows.map(r => Number(r.value)).filter(Number.isFinite);
+  if(series.length < 2) return null;
+  const latest = series[0];
+  const trailing = series.slice(1);
+  const avg = trailing.reduce((a,b)=>a+b,0)/trailing.length;
+  if(!Number.isFinite(avg) || avg===0) return null;
+  const pctChange = (latest-avg)/avg;
+  const score = Math.max(-1, Math.min(1, -(pctChange/0.03)));
+  return { score, latest, avg, pctChange, latestPeriod: rows[0].period };
+}
+
+// ---------- oil sentiment: reuses gold's fetchGeopoliticalHeadlines() and
+// fetchGoldSentimentGemini() verbatim (same Al Jazeera/BBC RSS sources, same
+// reworded prompt that avoids Gemini's region-gated content category) — no
+// oil-specific sentiment function needed; see main() below for the call site.
+
+// ---------- oil composite scoring: genuine 4 factors (tech, smart money, context, sentiment) ----------
+// Same shape as ETH's computeComposite/checkConfluence (activeCount>=3
+// confluence bar, same q formula), just with oil's own factor names —
+// written separately rather than reusing ETH's function under mismatched
+// weight-key names (whale/context vs smartMoney/context).
+function checkConfluenceOil(t, s, c, sent){
+  const scores=[t,s,c,sent].filter(x=>x!==null&&x!==undefined);
+  if(scores.length<2) return true;
+  const pos=scores.filter(x=>x>0.05).length, neg=scores.filter(x=>x<-0.05).length;
+  return Math.max(pos,neg)>=2;
+}
+
+function computeCompositeOil(techScore, smartMoneyScore, contextScore, sentScore, weights, regimeFactor, volumeFactor, mtfMultiplier){
+  let total = weights.tech + (smartMoneyScore!==null?weights.smartMoney:0) + (sentScore!==null?weights.sentiment:0) + (contextScore!==null?weights.context:0);
+  if(total===0) total=1;
+  let rawComposite = (techScore*weights.tech) + (smartMoneyScore!==null?smartMoneyScore*weights.smartMoney:0) + (sentScore!==null?sentScore*weights.sentiment:0) + (contextScore!==null?contextScore*weights.context:0);
+  rawComposite/=total;
+  const confluenceOk = checkConfluenceOil(techScore, smartMoneyScore, contextScore, sentScore);
+  const activeCount = [techScore, smartMoneyScore, sentScore, contextScore].filter(s=>s!==null&&s!==undefined).length;
+  let q=1;
+  q += 0.35*(regimeFactor-1);
+  q += 0.25*(volumeFactor-1);
+  if(activeCount>=3) q += confluenceOk?0.05:-0.35; // 4 possible factors, same "3+ agree" bar as ETH
+  q += 0.15*(mtfMultiplier-1);
+  q = Math.max(0.3, Math.min(1.4, q));
+  let adjusted = rawComposite*q;
+  adjusted = Number.isFinite(adjusted) ? Math.max(-1, Math.min(1, adjusted)) : 0;
+  let signal='HOLD';
+  if(adjusted>0.15) signal='BUY'; else if(adjusted<-0.15) signal='SHORT';
+  let confidence = Math.min(99, Math.round(Math.abs(adjusted)*100));
+  if(!Number.isFinite(confidence)) confidence = 0;
+  return { composite:adjusted, signal, confidence, confluenceOk };
+}
+
+// ---------- oil grading / weight rebalancing (4 weights: tech, smartMoney, sentiment, context) ----------
+function gradeSignalsOil(modeState, cfg, now){
+  const primaryKey = cfg.horizons[cfg.primaryHorizonIndex][0];
+  for(const entry of modeState.log){
+    if(!entry.horizons){ entry.horizons={}; cfg.horizons.forEach(([k])=>entry.horizons[k]={graded:false,outcome:null}); }
+    for(const [key,ms] of cfg.horizons){
+      const h=entry.horizons[key];
+      if(!h||h.graded) continue;
+      const due=entry.ts+ms;
+      if(now<due) continue;
+      const priceThen=priceAt(modeState, due);
+      if(priceThen===null) continue;
+      const {outcome, actualDir} = judgeOutcome(entry, priceThen);
+      h.graded=true; h.outcome=outcome;
+      if(key===primaryKey){
+        updateCalibration(modeState, entry.confidence, outcome==='correct');
+        if(actualDir!==0){
+          const bump = s=>(s===null||s===undefined)?0:(Math.sign(s)===actualDir?LEARNING_RATE:(Math.sign(s)===-actualDir?-LEARNING_RATE:0));
+          modeState.weights.tech=Math.max(0.05, modeState.weights.tech+bump(entry.techScore));
+          if(entry.smartMoneyScore!==null) modeState.weights.smartMoney=Math.max(0.05, modeState.weights.smartMoney+bump(entry.smartMoneyScore));
+          if(entry.sentimentScore!==null) modeState.weights.sentiment=Math.max(0.05, modeState.weights.sentiment+bump(entry.sentimentScore));
+          if(entry.contextScore!==null&&entry.contextScore!==undefined) modeState.weights.context=Math.max(0.05, modeState.weights.context+bump(entry.contextScore));
+          const sum=modeState.weights.tech+modeState.weights.smartMoney+modeState.weights.sentiment+modeState.weights.context;
+          modeState.weights.tech/=sum; modeState.weights.smartMoney/=sum; modeState.weights.sentiment/=sum; modeState.weights.context/=sum;
+        }
+      }
+    }
+  }
+}
+
+async function runModeOil(mode, sharedOil){
+  const cfg = MODE_CONFIGS[mode];
+  let modeState = await supaGet(mode, 'oil');
+  if(!modeState) modeState = freshModeStateOil();
+  if(!modeState.volumeCache) modeState.volumeCache = [];
+
+  const { prices, volumes } = await fetchOilPriceHistory(mode);
+  modeState.priceCache = prices; modeState.volumeCache = volumes;
+  const ind = computeIndicators(prices, volumes, cfg);
+
+  const techDir = Math.abs(ind.rawScore)<0.05?0:Math.sign(ind.rawScore);
+
+  gradeSignalsOil(modeState, cfg, Date.now());
+
+  const smartMoneyScore = sharedOil.lastSmartMoneyScore;
+  const contextScore = sharedOil.lastContextScore;
+  const sentScore = sharedOil.lastSentiment ? sharedOil.lastSentiment.score : null;
+
+  const otherMode = mode==='swing'?'day':'swing';
+  const otherState = await supaGet(otherMode, 'oil');
+  const otherDir = otherState ? otherState.lastTechDir : 0;
+  let mtfMult = 1.0;
+  if(otherDir && techDir) mtfMult = otherDir===techDir ? 1.1 : 0.85;
+
+  modeState.lastTechDir = techDir;
+
+  const comp = computeCompositeOil(ind.rawScore, smartMoneyScore, contextScore, sentScore, modeState.weights, ind.regimeFactor, ind.volumeFactor, mtfMult);
+
+  const now = Date.now();
+  const logIntervalMs = cfg.logIntervalMin*60000;
+  const calibratedConfidence = getCalibratedConfidence(modeState, comp.confidence);
+  if(!modeState.lastLogTs || (now-modeState.lastLogTs)>=logIntervalMs){
+    const horizonsObj={}; cfg.horizons.forEach(([k])=>horizonsObj[k]={graded:false,outcome:null});
+    modeState.log.push({ ts:now, price:ind.latestPrice, techScore:ind.rawScore, smartMoneyScore, contextScore, sentimentScore:sentScore, signal:comp.signal, confidence:comp.confidence, calibratedConfidence, horizons:horizonsObj });
+    modeState.lastLogTs = now;
+    if(modeState.log.length>2000) modeState.log = modeState.log.slice(-2000);
+  }
+
+  await supaSet(mode, modeState, 'oil');
+  console.log(`[oil/${mode}] price=$${ind.latestPrice.toFixed(2)} signal=${comp.signal} confidence=${comp.confidence}% (calibrated ${calibratedConfidence}%)`);
+  return modeState;
+}
+
 async function main(){
   if(!SUPABASE_URL || !SUPABASE_KEY){ console.error('Missing SUPABASE_URL / SUPABASE_KEY'); process.exit(1); }
 
@@ -763,6 +995,64 @@ async function main(){
     }catch(e){ console.error('gold pipeline failed', e.message); }
   } else {
     console.log('Skipping gold pipeline — TWELVEDATA_KEY not set');
+  }
+
+  // ---------- Oil (WTI/USD) — additive, independent of everything above ----------
+  if(TWELVEDATA_KEY){
+    let sharedOil = await loadSharedOil();
+
+    if(!sharedOil.lastSmartMoneyCheckTs || now-sharedOil.lastSmartMoneyCheckTs>24*3600000){
+      try{
+        const rows = await fetchOilCOT();
+        const cot = computeOilSmartMoneyScore(rows);
+        if(cot){
+          sharedOil.lastSmartMoneyScore = cot.score;
+          sharedOil.lastSmartMoneyDetail = { reportDate:cot.reportDate, netPosition:cot.netPosition, openInterest:cot.openInterest };
+          sharedOil.lastSmartMoneyCheckTs = now;
+        }
+      }catch(e){ console.error('oil COT check failed', e.message); }
+    }
+
+    if(EIA_API_KEY && (!sharedOil.lastContextCheckTs || now-sharedOil.lastContextCheckTs>24*3600000)){
+      try{
+        const rows = await fetchOilInventory(EIA_API_KEY);
+        const ctx = computeOilInventoryContextScore(rows);
+        if(ctx){
+          sharedOil.lastContextScore = ctx.score;
+          sharedOil.lastInventoryDetail = { period:ctx.latestPeriod, latest:ctx.latest, trailingAvg:ctx.avg };
+          sharedOil.lastContextCheckTs = now;
+        }
+      }catch(e){ console.error('oil inventory check failed', e.message); }
+    }
+
+    if(GEMINI_API_KEY && (!sharedOil.lastSentimentCheckTs || now-sharedOil.lastSentimentCheckTs>4*3600000)){
+      try{
+        // Reuses gold's exact sentiment function — same RSS sources, same
+        // reworded prompt (avoids Gemini's region-gated content category).
+        const result = await fetchGoldSentimentGemini(GEMINI_API_KEY);
+        if(result){ sharedOil.lastSentiment = result; sharedOil.lastSentimentCheckTs = now; sharedOil.lastSentimentError = null; }
+      }catch(e){
+        const msg = String(e.message);
+        const isRegionGated = /not available in your current location/i.test(msg);
+        if(isRegionGated){
+          if(sharedOil.lastSentimentError !== msg) console.error('oil sentiment check failed (region-gated)', msg);
+          else console.log('oil sentiment still region-gated (unchanged) — skipping until next interval');
+          sharedOil.lastSentimentCheckTs = now;
+        } else {
+          console.error('oil sentiment check failed', msg);
+        }
+        sharedOil.lastSentimentError = msg.slice(0,300);
+      }
+    }
+
+    await saveSharedOil(sharedOil);
+
+    try{
+      await runModeOil('swing', sharedOil);
+      await runModeOil('day', sharedOil);
+    }catch(e){ console.error('oil pipeline failed', e.message); }
+  } else {
+    console.log('Skipping oil pipeline — TWELVEDATA_KEY not set');
   }
 }
 
