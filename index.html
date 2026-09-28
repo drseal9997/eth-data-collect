@@ -23,6 +23,10 @@
   .mode-btn:last-child{border-right:none;}
   .mode-btn.active{color:var(--amber);background:rgba(217,164,65,0.08);}
 
+  .topbar-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+  .earn-nav-btn{background:none;border:1px solid var(--amber);color:var(--amber);font-family:'Space Grotesk',sans-serif;font-size:12.5px;padding:8px 14px;cursor:pointer;}
+  .earn-nav-btn:hover{background:rgba(217,164,65,0.1);}
+
   .site-nav{font-size:12px;margin-bottom:18px;}
   .site-nav a{color:var(--dim);text-decoration:none;}
   .site-nav a:hover{color:var(--amber);}
@@ -247,9 +251,12 @@
       <h1>ETHCORPUS</h1>
       <div class="sub" id="sub">Live — data collected 24/7 in the background</div>
     </div>
-    <div class="mode-toggle">
-      <button class="mode-btn active" id="btnSwing">Swing</button>
-      <button class="mode-btn" id="btnDay">Day-trade</button>
+    <div class="topbar-actions">
+      <button class="earn-nav-btn mono" id="earnNavBtn" type="button">Earn with EthCorpus</button>
+      <div class="mode-toggle">
+        <button class="mode-btn active" id="btnSwing">Swing</button>
+        <button class="mode-btn" id="btnDay">Day-trade</button>
+      </div>
     </div>
   </div>
 
@@ -387,7 +394,7 @@
     The verdict above reflects the current composite signal, not a guarantee. Pattern matches show what happened after similar historical price shapes in the available data — a base rate for context, not a prediction of what will happen this time. Refreshes every 60 seconds. Not financial advice.
   </div>
 
-  <div class="earn-section">
+  <div class="earn-section" id="earnSection">
     <div class="earn-heading mono">EARN WITH ETHCORPUS</div>
     <div class="earn-body">Become an EthCorpus affiliate and earn <b><span id="earnAmount2">£10</span></b> for every paying subscriber who signs up through your unique referral link or code. Affiliate access opens to subscribers once our paid plans launch.</div>
     <div class="earn-cta">Apply now to join the waitlist — early applicants get first pick of terms once the program goes live. <button type="button" class="link" id="affiliateOpenBtn4">Apply to be an early affiliate</button></div>
@@ -1399,6 +1406,12 @@ async function refresh(){
     document.getElementById('lastUpdated').textContent = 'Failed to load — will retry.';
   }
 }
+
+const earnNavBtn = document.getElementById('earnNavBtn');
+if(earnNavBtn) earnNavBtn.addEventListener('click', ()=>{
+  const target = document.getElementById('earnSection');
+  if(target) target.scrollIntoView({ behavior:'smooth', block:'start' });
+});
 
 document.getElementById('btnSwing').addEventListener('click', ()=>{
   currentMode='swing';
