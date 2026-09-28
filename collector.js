@@ -7,6 +7,7 @@ const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const ETHERSCAN_KEY = process.env.ETHERSCAN_KEY || null;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || null;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || null;
+const TWELVEDATA_KEY = process.env.TWELVEDATA_KEY || null;
 
 const LEARNING_RATE = 0.04;
 const CAL_DECAY = 0.98;
@@ -37,31 +38,36 @@ function freshModeState(){
   };
 }
 
-async function supaGet(mode){
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/signal_state?mode=eq.${mode}&select=state`, {
+// `asset` defaults to 'eth' so every existing ETH call site (supaGet(mode),
+// supaSet(mode, state)) queries/writes exactly the same row it always has,
+// unchanged, now that signal_state's primary key is the composite
+// (asset, mode) instead of mode alone. The gold pipeline below is the only
+// caller that passes asset='gold' explicitly.
+async function supaGet(mode, asset='eth'){
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/signal_state?asset=eq.${asset}&mode=eq.${mode}&select=state`, {
     headers:{ apikey:SUPABASE_KEY, Authorization:`Bearer ${SUPABASE_KEY}` }
   });
   if(!res.ok){
     const body = await res.text();
-    console.error(`Supabase GET failed for mode=${mode}: ${res.status} ${res.statusText} — ${body}`);
+    console.error(`Supabase GET failed for asset=${asset} mode=${mode}: ${res.status} ${res.statusText} — ${body}`);
     return null;
   }
   const rows = await res.json();
   return Array.isArray(rows) && rows.length ? rows[0].state : null;
 }
 
-async function supaSet(mode, state){
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/signal_state?on_conflict=mode`, {
+async function supaSet(mode, state, asset='eth'){
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/signal_state?on_conflict=asset,mode`, {
     method:'POST',
     headers:{
       apikey:SUPABASE_KEY, Authorization:`Bearer ${SUPABASE_KEY}`,
       'Content-Type':'application/json', Prefer:'resolution=merge-duplicates'
     },
-    body: JSON.stringify([{ mode, state, updated_at: new Date().toISOString() }])
+    body: JSON.stringify([{ asset, mode, state, updated_at: new Date().toISOString() }])
   });
   if(!res.ok){
     const body = await res.text();
-    console.error(`Supabase WRITE failed for mode=${mode}: ${res.status} ${res.statusText} — ${body}`);
+    console.error(`Supabase WRITE failed for asset=${asset} mode=${mode}: ${res.status} ${res.statusText} — ${body}`);
     throw new Error(`Supabase write failed (${res.status})`);
   }
 }
@@ -407,6 +413,252 @@ Write a short, independent, plain-English take (2-4 sentences) on what's going o
   return match ? JSON.parse(match[0]) : null;
 }
 
+// =====================================================================
+// Gold (XAU/USD) — additive parallel pipeline. Reuses MODE_CONFIGS,
+// computeIndicators, sma/rsi/ema, and the priceAt/judgeOutcome/
+// updateCalibration/getCalibratedConfidence grading primitives verbatim
+// (all already asset-agnostic). Does not modify anything in the ETH
+// pipeline above; stores its state under signal_state's asset='gold'.
+// =====================================================================
+
+function freshModeStateGold(){
+  return {
+    weights:{tech:0.45, smartMoney:0.30, sentiment:0.25},
+    log:[], lastLogTs:null, priceCache:[], volumeCache:[],
+    calibration: CAL_BUCKETS.map(([min,max])=>({min,max,correct:0,total:0})),
+    lastTechDir:0
+  };
+}
+
+async function loadSharedGold(){
+  const s = await supaGet('shared', 'gold');
+  return s || { lastSmartMoneyScore:null, lastSmartMoneyCheckTs:null, lastSmartMoneyDetail:null,
+    lastSentiment:null, lastSentimentCheckTs:null, lastSentimentError:null };
+}
+async function saveSharedGold(shared){ await supaSet('shared', shared, 'gold'); }
+
+// ---------- gold price: Twelve Data time_series (XAU/USD) ----------
+// interval/outputsize chosen per mode to mirror the same swing (long history,
+// coarser granularity) vs day-trade (short history, fine granularity)
+// split CoinGecko already gives the ETH pipeline via `days`.
+const GOLD_TD_INTERVAL = { swing:'1h', day:'15min' };
+const GOLD_TD_OUTPUTSIZE = { swing:2160, day:300 }; // ~90d of hourly bars / ~3d of 15-min bars
+
+async function fetchGoldPriceHistory(mode){
+  const interval = GOLD_TD_INTERVAL[mode];
+  const outputsize = GOLD_TD_OUTPUTSIZE[mode];
+  const url = `https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=${interval}&outputsize=${outputsize}&order=asc&timezone=UTC&apikey=${TWELVEDATA_KEY}`;
+  const res = await fetch(url);
+  const data = await res.json();
+  if(data.status === 'error' || !Array.isArray(data.values)){
+    throw new Error(`Twelve Data error: ${JSON.stringify(data).slice(0,300)}`);
+  }
+  const prices = data.values.map(v => [ new Date(v.datetime.replace(' ','T')+'Z').getTime(), Number(v.close) ]);
+  // XAU/USD is an OTC spot-style quote — Twelve Data doesn't return meaningful
+  // volume for it. computeIndicators still needs a same-length volumes array
+  // for its volume-ratio regime factor, so feed it a flat placeholder that
+  // always yields a neutral ratio (1) rather than skewing that factor.
+  const volumes = prices.map(p => [p[0], 1]);
+  return { prices, volumes };
+}
+
+// ---------- gold "smart money" factor: CFTC Commitment of Traders ----------
+// Free, unauthenticated Socrata Open Data API. The Legacy Futures-Only
+// report updates weekly (Fridays, as-of the prior Tuesday), so this is
+// cached in sharedGold and only re-checked once a day, not every cycle.
+const COT_DATASET_URL = 'https://publicreporting.cftc.gov/resource/6dca-aqww.json';
+const COT_GOLD_MARKET_NAME = "GOLD - COMMODITY EXCHANGE INC.";
+
+async function fetchGoldCOT(){
+  const where = encodeURIComponent(`market_and_exchange_names='${COT_GOLD_MARKET_NAME}'`);
+  const url = `${COT_DATASET_URL}?$where=${where}&$order=report_date_as_yyyy_mm_dd DESC&$limit=52`;
+  const res = await fetch(url);
+  if(!res.ok) throw new Error(`CFTC COT fetch failed: ${res.status}`);
+  const rows = await res.json();
+  if(!Array.isArray(rows) || !rows.length) throw new Error('CFTC COT returned no rows');
+  return rows; // most-recent report first, up to ~52 weekly reports (~1 year)
+}
+
+// "Smart money" here follows the classic COT reading: commercial hedgers
+// (miners, bullion banks) are the informed side, read contrarian to
+// speculators. Net commercial position (long minus short) is normalized to
+// its own trailing ~1-year range — near the top of that range (heavily net
+// long relative to its recent history) scores toward +1 (bullish), near the
+// bottom (heavily net short) toward -1 (bearish).
+function computeGoldSmartMoneyScore(rows){
+  const netSeries = rows
+    .map(r => Number(r.comm_positions_long_all) - Number(r.comm_positions_short_all))
+    .filter(Number.isFinite);
+  if(!netSeries.length) return null;
+  const latestNet = netSeries[0];
+  const min = Math.min(...netSeries), max = Math.max(...netSeries);
+  const range = (max-min) || 1;
+  const score = Math.max(-1, Math.min(1, ((latestNet-min)/range)*2 - 1));
+  const latestRow = rows[0];
+  return {
+    score, netPosition: latestNet,
+    reportDate: latestRow.report_date_as_yyyy_mm_dd,
+    openInterest: Number(latestRow.open_interest_all) || null
+  };
+}
+
+// ---------- gold sentiment: Gemini + geopolitical RSS (Al Jazeera + BBC World) ----------
+// Same free-headlines-then-Gemini approach as ETH's fetchSentimentGemini,
+// but sourced from world/conflict news rather than crypto news, and scored
+// for geopolitical risk (rising tension is typically bullish for gold as a
+// safe-haven asset) rather than general market sentiment.
+const GOLD_SENTIMENT_FEEDS = [
+  'https://www.aljazeera.com/xml/rss/all.xml',
+  'https://feeds.bbci.co.uk/news/world/rss.xml'
+];
+
+async function fetchGeopoliticalHeadlines(){
+  const titles = [];
+  for(const feedUrl of GOLD_SENTIMENT_FEEDS){
+    try{
+      const res = await fetch(feedUrl, { headers:{ 'User-Agent':'Mozilla/5.0 (compatible; EthCorpusCollector/1.0)' } });
+      if(!res.ok){ console.error(`geopolitical rss fetch failed for ${feedUrl}: ${res.status}`); continue; }
+      const xml = await res.text();
+      const itemBlocks = xml.match(/<item>[\s\S]*?<\/item>/g) || [];
+      itemBlocks.slice(0,10).forEach(block=>{
+        const m = block.match(/<title>([\s\S]*?)<\/title>/);
+        if(m) titles.push(m[1].replace('<![CDATA[','').replace(']]>','').trim());
+      });
+    }catch(e){ console.error(`geopolitical rss fetch failed for ${feedUrl}:`, e.message); }
+  }
+  if(!titles.length) throw new Error('geopolitical rss parse yielded no titles across both feeds');
+  return titles;
+}
+
+async function fetchGoldSentimentGemini(apiKey){
+  const headlines = await fetchGeopoliticalHeadlines();
+  const headlineText = headlines.map(t=>`- ${t}`).join('\n');
+  const prompt = `Here are recent world-news headlines from Al Jazeera and BBC World:\n${headlineText}\n\nBased only on these headlines, assess overall geopolitical risk and tension (war, conflict, sanctions, instability) and its likely effect on gold prices. Rising geopolitical tension is typically bullish for gold (safe-haven demand); calm or de-escalation is typically bearish. Respond with ONLY a JSON object, no markdown fences, no other text: {"score": <number from -1 (de-escalating, bearish for gold) to 1 (high tension, bullish for gold)>, "summary": "<one sentence, under 20 words>"}`;
+
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/interactions?key=${apiKey}`, {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ model:'gemini-3.1-flash-lite', input: prompt })
+  });
+  if(!res.ok){ const t = await res.text(); throw new Error(`Gemini error ${res.status}: ${t}`); }
+  const data = await res.json();
+  const lastStep = data.steps[data.steps.length-1];
+  const textPart = (lastStep.content || []).find(c=>c.type==='text');
+  if(!textPart) return null;
+  const clean = textPart.text.replace(/```json|```/g,'').trim();
+  const match = clean.match(/\{[\s\S]*\}/);
+  return match ? JSON.parse(match[0]) : null;
+}
+
+// ---------- gold composite scoring: 3 factors (tech, smart money, sentiment) ----------
+// No market-context equivalent exists for gold (no Fear & Greed / funding
+// rate analog), so this is its own function rather than forcing a 4th
+// placeholder factor through the ETH computeComposite above.
+function checkConfluenceGold(t, s, sent){
+  const scores=[t,s,sent].filter(x=>x!==null&&x!==undefined);
+  if(scores.length<2) return true;
+  const pos=scores.filter(x=>x>0.05).length, neg=scores.filter(x=>x<-0.05).length;
+  return Math.max(pos,neg)>=2;
+}
+
+function computeCompositeGold(techScore, smartMoneyScore, sentScore, weights, regimeFactor, volumeFactor, mtfMultiplier){
+  let total = weights.tech + (smartMoneyScore!==null?weights.smartMoney:0) + (sentScore!==null?weights.sentiment:0);
+  if(total===0) total=1;
+  let rawComposite = (techScore*weights.tech) + (smartMoneyScore!==null?smartMoneyScore*weights.smartMoney:0) + (sentScore!==null?sentScore*weights.sentiment:0);
+  rawComposite/=total;
+  const confluenceOk = checkConfluenceGold(techScore, smartMoneyScore, sentScore);
+  const activeCount = [techScore, smartMoneyScore, sentScore].filter(s=>s!==null&&s!==undefined).length;
+  let q=1;
+  q += 0.35*(regimeFactor-1);
+  q += 0.25*(volumeFactor-1);
+  // Only 3 possible factors total for gold (vs 4 for ETH), so "most of them
+  // agreeing" is 2+ active here rather than ETH's 3+.
+  if(activeCount>=2) q += confluenceOk?0.05:-0.35;
+  q += 0.15*(mtfMultiplier-1);
+  q = Math.max(0.3, Math.min(1.4, q));
+  let adjusted = rawComposite*q;
+  adjusted = Number.isFinite(adjusted) ? Math.max(-1, Math.min(1, adjusted)) : 0;
+  let signal='HOLD';
+  if(adjusted>0.15) signal='BUY'; else if(adjusted<-0.15) signal='SHORT';
+  let confidence = Math.min(99, Math.round(Math.abs(adjusted)*100));
+  if(!Number.isFinite(confidence)) confidence = 0;
+  return { composite:adjusted, signal, confidence, confluenceOk };
+}
+
+// ---------- gold grading / weight rebalancing (3 weights, no context) ----------
+// Reuses priceAt/judgeOutcome/updateCalibration verbatim from the ETH
+// pipeline (already asset-agnostic); only the weight-bump section differs,
+// since gold's weights object has different keys (tech/smartMoney/sentiment).
+function gradeSignalsGold(modeState, cfg, now){
+  const primaryKey = cfg.horizons[cfg.primaryHorizonIndex][0];
+  for(const entry of modeState.log){
+    if(!entry.horizons){ entry.horizons={}; cfg.horizons.forEach(([k])=>entry.horizons[k]={graded:false,outcome:null}); }
+    for(const [key,ms] of cfg.horizons){
+      const h=entry.horizons[key];
+      if(!h||h.graded) continue;
+      const due=entry.ts+ms;
+      if(now<due) continue;
+      const priceThen=priceAt(modeState, due);
+      if(priceThen===null) continue;
+      const {outcome, actualDir} = judgeOutcome(entry, priceThen);
+      h.graded=true; h.outcome=outcome;
+      if(key===primaryKey){
+        updateCalibration(modeState, entry.confidence, outcome==='correct');
+        if(actualDir!==0){
+          const bump = s=>(s===null||s===undefined)?0:(Math.sign(s)===actualDir?LEARNING_RATE:(Math.sign(s)===-actualDir?-LEARNING_RATE:0));
+          modeState.weights.tech=Math.max(0.05, modeState.weights.tech+bump(entry.techScore));
+          if(entry.smartMoneyScore!==null) modeState.weights.smartMoney=Math.max(0.05, modeState.weights.smartMoney+bump(entry.smartMoneyScore));
+          if(entry.sentimentScore!==null) modeState.weights.sentiment=Math.max(0.05, modeState.weights.sentiment+bump(entry.sentimentScore));
+          const sum=modeState.weights.tech+modeState.weights.smartMoney+modeState.weights.sentiment;
+          modeState.weights.tech/=sum; modeState.weights.smartMoney/=sum; modeState.weights.sentiment/=sum;
+        }
+      }
+    }
+  }
+}
+
+async function runModeGold(mode, sharedGold){
+  const cfg = MODE_CONFIGS[mode]; // same swing/day timeframe config as ETH — asset-agnostic
+  let modeState = await supaGet(mode, 'gold');
+  if(!modeState) modeState = freshModeStateGold();
+  if(!modeState.volumeCache) modeState.volumeCache = [];
+
+  const { prices, volumes } = await fetchGoldPriceHistory(mode);
+  modeState.priceCache = prices; modeState.volumeCache = volumes;
+  const ind = computeIndicators(prices, volumes, cfg); // exact same RSI/MACD/SMA logic as ETH
+
+  const techDir = Math.abs(ind.rawScore)<0.05?0:Math.sign(ind.rawScore);
+
+  gradeSignalsGold(modeState, cfg, Date.now());
+
+  const smartMoneyScore = sharedGold.lastSmartMoneyScore;
+  const sentScore = sharedGold.lastSentiment ? sharedGold.lastSentiment.score : null;
+
+  const otherMode = mode==='swing'?'day':'swing';
+  const otherState = await supaGet(otherMode, 'gold');
+  const otherDir = otherState ? otherState.lastTechDir : 0;
+  let mtfMult = 1.0;
+  if(otherDir && techDir) mtfMult = otherDir===techDir ? 1.1 : 0.85;
+
+  modeState.lastTechDir = techDir;
+
+  const comp = computeCompositeGold(ind.rawScore, smartMoneyScore, sentScore, modeState.weights, ind.regimeFactor, ind.volumeFactor, mtfMult);
+
+  const now = Date.now();
+  const logIntervalMs = cfg.logIntervalMin*60000;
+  const calibratedConfidence = getCalibratedConfidence(modeState, comp.confidence);
+  if(!modeState.lastLogTs || (now-modeState.lastLogTs)>=logIntervalMs){
+    const horizonsObj={}; cfg.horizons.forEach(([k])=>horizonsObj[k]={graded:false,outcome:null});
+    modeState.log.push({ ts:now, price:ind.latestPrice, techScore:ind.rawScore, smartMoneyScore, sentimentScore:sentScore, signal:comp.signal, confidence:comp.confidence, calibratedConfidence, horizons:horizonsObj });
+    modeState.lastLogTs = now;
+    if(modeState.log.length>2000) modeState.log = modeState.log.slice(-2000);
+  }
+
+  await supaSet(mode, modeState, 'gold');
+  console.log(`[gold/${mode}] price=$${ind.latestPrice.toFixed(2)} signal=${comp.signal} confidence=${comp.confidence}% (calibrated ${calibratedConfidence}%)`);
+  return modeState;
+}
+
 async function main(){
   if(!SUPABASE_URL || !SUPABASE_KEY){ console.error('Missing SUPABASE_URL / SUPABASE_KEY'); process.exit(1); }
 
@@ -455,6 +707,39 @@ async function main(){
       shared.aiCommentaryError = String(e.message).slice(0,300);
     }
     await saveShared(shared);
+  }
+
+  // ---------- Gold (XAU/USD) — additive, independent of everything above ----------
+  if(TWELVEDATA_KEY){
+    let sharedGold = await loadSharedGold();
+
+    if(!sharedGold.lastSmartMoneyCheckTs || now-sharedGold.lastSmartMoneyCheckTs>24*3600000){
+      try{
+        const rows = await fetchGoldCOT();
+        const cot = computeGoldSmartMoneyScore(rows);
+        if(cot){
+          sharedGold.lastSmartMoneyScore = cot.score;
+          sharedGold.lastSmartMoneyDetail = { reportDate:cot.reportDate, netPosition:cot.netPosition, openInterest:cot.openInterest };
+          sharedGold.lastSmartMoneyCheckTs = now;
+        }
+      }catch(e){ console.error('gold COT check failed', e.message); }
+    }
+
+    if(GEMINI_API_KEY && (!sharedGold.lastSentimentCheckTs || now-sharedGold.lastSentimentCheckTs>4*3600000)){
+      try{
+        const result = await fetchGoldSentimentGemini(GEMINI_API_KEY);
+        if(result){ sharedGold.lastSentiment = result; sharedGold.lastSentimentCheckTs = now; sharedGold.lastSentimentError = null; }
+      }catch(e){ console.error('gold sentiment check failed', e.message); sharedGold.lastSentimentError = String(e.message).slice(0,300); }
+    }
+
+    await saveSharedGold(sharedGold);
+
+    try{
+      await runModeGold('swing', sharedGold);
+      await runModeGold('day', sharedGold);
+    }catch(e){ console.error('gold pipeline failed', e.message); }
+  } else {
+    console.log('Skipping gold pipeline — TWELVEDATA_KEY not set');
   }
 }
 
