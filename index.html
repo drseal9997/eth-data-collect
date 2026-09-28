@@ -8,6 +8,7 @@
 <meta name="theme-color" content="#0D0F14">
 <link rel="icon" href="icon-192.png">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
   :root{ --bg:#0D0F14; --panel:#161A22; --line:#2A2F3A; --text:#E4E6EB; --dim:#8A93A6; --bull:#4EA672; --bear:#B4472E; --amber:#D9A441; }
@@ -26,6 +27,14 @@
   .topbar-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
   .earn-nav-btn{background:none;border:1px solid var(--amber);color:var(--amber);font-family:'Space Grotesk',sans-serif;font-size:12.5px;padding:8px 14px;cursor:pointer;}
   .earn-nav-btn:hover{background:rgba(217,164,65,0.1);}
+
+  .auth-area{display:flex;align-items:center;}
+  .auth-btn{background:none;border:1px solid var(--line);color:var(--dim);font-family:'Space Grotesk',sans-serif;font-size:12.5px;padding:8px 14px;cursor:pointer;}
+  .auth-btn:hover{color:var(--text);border-color:var(--dim);}
+  .auth-user{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--dim);}
+  .auth-user .auth-email{color:var(--text);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .auth-user .auth-signout-btn{background:none;border:1px solid var(--line);color:var(--dim);font-family:'Space Grotesk',sans-serif;font-size:11px;padding:6px 10px;cursor:pointer;}
+  .auth-user .auth-signout-btn:hover{color:var(--text);border-color:var(--dim);}
 
   .site-nav{font-size:12px;margin-bottom:18px;}
   .site-nav a{color:var(--dim);text-decoration:none;}
@@ -252,6 +261,7 @@
       <div class="sub" id="sub">Live — data collected 24/7 in the background</div>
     </div>
     <div class="topbar-actions">
+      <div class="auth-area mono" id="authArea"></div>
       <button class="earn-nav-btn mono" id="earnNavBtn" type="button">Earn with EthCorpus</button>
       <div class="mode-toggle">
         <button class="mode-btn active" id="btnSwing">Swing</button>
@@ -453,6 +463,28 @@
     <div id="affiliateThanksView" style="display:none;">
       <h3>You're on the list</h3>
       <div class="affiliate-thanks">Thanks — you're on the list. We'll reach out once the affiliate program is ready.</div>
+    </div>
+  </div>
+</div>
+
+<div class="affiliate-overlay" id="authOverlay">
+  <div class="affiliate-modal mono">
+    <button type="button" class="close-btn" id="authCloseBtn" aria-label="Close">✕</button>
+    <div id="authFormView">
+      <h3>Sign in</h3>
+      <div class="sub" style="font-family:'Space Grotesk',sans-serif;">Enter your email and we'll send you a link to sign in — no password needed.</div>
+      <form id="authForm">
+        <div class="affiliate-field">
+          <label for="authEmail">Email</label>
+          <input type="email" id="authEmail" name="email" autocomplete="email" required>
+        </div>
+        <button type="submit" class="affiliate-submit" id="authSubmitBtn">Send magic link</button>
+      </form>
+      <div class="affiliate-status" id="authStatus" style="display:none;"></div>
+    </div>
+    <div id="authSentView" style="display:none;">
+      <h3>Check your email</h3>
+      <div class="affiliate-thanks">We've sent a sign-in link to <b id="authSentEmail"></b>. Click it to finish signing in.</div>
     </div>
   </div>
 </div>
@@ -1647,6 +1679,120 @@ if('serviceWorker' in navigator){
       submitBtn.disabled = false;
       submitBtn.textContent = 'Apply';
     }
+  });
+})();
+
+// ---------- passwordless (magic-link) auth ----------
+// Uses the Supabase JS client (loaded via CDN in <head>) with the same public
+// SUPABASE_URL/SUPABASE_KEY already used elsewhere on this page for REST reads —
+// never the service_role key. detectSessionInUrl (default true) makes the
+// client parse the magic-link redirect's URL fragment and establish the
+// session automatically; onAuthStateChange picks that up (event
+// 'SIGNED_IN'/'INITIAL_SESSION') and drives the UI below.
+(function initAuth(){
+  if(!window.supabase || !window.supabase.createClient){
+    console.error('Supabase client library failed to load — auth disabled');
+    return;
+  }
+  const sbAuth = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+  const overlay = document.getElementById('authOverlay');
+  const formView = document.getElementById('authFormView');
+  const sentView = document.getElementById('authSentView');
+  const form = document.getElementById('authForm');
+  const emailInput = document.getElementById('authEmail');
+  const statusEl = document.getElementById('authStatus');
+  const submitBtn = document.getElementById('authSubmitBtn');
+  const closeBtn = document.getElementById('authCloseBtn');
+  const authArea = document.getElementById('authArea');
+
+  function showStatus(kind, text){
+    statusEl.style.display = 'block';
+    statusEl.className = 'affiliate-status ' + kind;
+    statusEl.textContent = text;
+  }
+
+  function openModal(){
+    formView.style.display = 'block';
+    sentView.style.display = 'none';
+    statusEl.style.display = 'none';
+    statusEl.textContent = '';
+    form.reset();
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Send magic link';
+    overlay.style.display = 'flex';
+  }
+  function closeModal(){ overlay.style.display = 'none'; }
+
+  closeBtn.addEventListener('click', closeModal);
+  overlay.addEventListener('click', (e)=>{ if(e.target === overlay) closeModal(); });
+  document.addEventListener('keydown', (e)=>{ if(e.key==='Escape' && overlay.style.display==='flex') closeModal(); });
+
+  form.addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    const email = emailInput.value.trim();
+    if(!email){ showStatus('error', 'Email is required.'); return; }
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Sending...';
+    statusEl.style.display = 'none';
+
+    try{
+      // Redirect back to this same page (dropping any existing query string,
+      // e.g. ?preview=true) so the magic link always lands somewhere the
+      // detectSessionInUrl handshake above can run.
+      const redirectTo = window.location.origin + window.location.pathname;
+      const { error } = await sbAuth.auth.signInWithOtp({ email, options:{ emailRedirectTo: redirectTo } });
+      if(error) throw error;
+      document.getElementById('authSentEmail').textContent = email;
+      formView.style.display = 'none';
+      sentView.style.display = 'block';
+    }catch(err){
+      console.error('magic link send failed', err);
+      showStatus('error', 'Could not send the link — please try again in a moment.');
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Send magic link';
+    }
+  });
+
+  // Renders the topbar auth widget for the given session (or null/undefined
+  // for logged-out) — rebuilt from scratch each call rather than toggled via
+  // CSS, since the two states have entirely different content.
+  function renderAuthUI(session){
+    authArea.innerHTML = '';
+    if(session && session.user){
+      const wrap = document.createElement('div');
+      wrap.className = 'auth-user';
+      const emailSpan = document.createElement('span');
+      emailSpan.className = 'auth-email';
+      emailSpan.textContent = session.user.email || '';
+      emailSpan.title = session.user.email || '';
+      const signOutBtn = document.createElement('button');
+      signOutBtn.type = 'button';
+      signOutBtn.className = 'auth-signout-btn';
+      signOutBtn.textContent = 'Sign out';
+      signOutBtn.addEventListener('click', async ()=>{
+        signOutBtn.disabled = true;
+        try{ await sbAuth.auth.signOut(); }
+        catch(err){ console.error('sign out failed', err); signOutBtn.disabled = false; }
+      });
+      wrap.appendChild(emailSpan);
+      wrap.appendChild(signOutBtn);
+      authArea.appendChild(wrap);
+    } else {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'auth-btn';
+      btn.textContent = 'Sign in';
+      btn.addEventListener('click', openModal);
+      authArea.appendChild(btn);
+    }
+  }
+
+  renderAuthUI(null); // immediate logged-out UI; corrected below once the real session (if any) resolves
+  sbAuth.auth.onAuthStateChange((_event, session)=>{
+    renderAuthUI(session);
+    if(session) closeModal();
   });
 })();
 </script>
