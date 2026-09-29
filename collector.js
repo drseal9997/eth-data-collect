@@ -984,7 +984,11 @@ async function main(){
       shared.lastWhaleScore = flow.score; shared.lastWhaleCheckTs = now;
     }catch(e){ console.error('whale check failed', e.message); }
   }
-  if(GEMINI_API_KEY && (!shared.lastSentimentCheckTs || now-shared.lastSentimentCheckTs>4*3600000)){
+  // !shared.lastHeadlines forces an immediate recheck if headlines were
+  // never persisted yet (e.g. an older cached row from before that field
+  // existed) — otherwise it'd stay missing until the 4h timer happened to
+  // expire, even though the code to populate it is already correct.
+  if(GEMINI_API_KEY && (!shared.lastSentimentCheckTs || !shared.lastHeadlines || now-shared.lastSentimentCheckTs>4*3600000)){
     try{
       const result = await fetchSentimentGemini(GEMINI_API_KEY);
       if(result){
@@ -1042,7 +1046,9 @@ async function main(){
       }catch(e){ console.error('gold COT check failed', e.message); }
     }
 
-    if(GEMINI_API_KEY && (!sharedGold.lastSentimentCheckTs || now-sharedGold.lastSentimentCheckTs>4*3600000)){
+    // !sharedGold.lastHeadlines forces an immediate recheck if headlines
+    // were never persisted yet — see the equivalent comment on shared above.
+    if(GEMINI_API_KEY && (!sharedGold.lastSentimentCheckTs || !sharedGold.lastHeadlines || now-sharedGold.lastSentimentCheckTs>4*3600000)){
       try{
         const result = await fetchGoldSentimentGemini(GEMINI_API_KEY);
         if(result){
@@ -1111,7 +1117,9 @@ async function main(){
       }catch(e){ console.error('oil inventory check failed', e.message); }
     }
 
-    if(GEMINI_API_KEY && (!sharedOil.lastSentimentCheckTs || now-sharedOil.lastSentimentCheckTs>4*3600000)){
+    // !sharedOil.lastHeadlines forces an immediate recheck if headlines
+    // were never persisted yet — see the equivalent comment on shared above.
+    if(GEMINI_API_KEY && (!sharedOil.lastSentimentCheckTs || !sharedOil.lastHeadlines || now-sharedOil.lastSentimentCheckTs>4*3600000)){
       try{
         // Reuses gold's exact sentiment function — same RSS sources, same
         // reworded prompt (avoids Gemini's region-gated content category).
