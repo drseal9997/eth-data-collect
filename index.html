@@ -8,6 +8,12 @@
 <meta name="theme-color" content="#0D0F14">
 <link rel="icon" href="icon-192.png">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<!-- Zoom/pan for the gold/oil simple price chart only — chartjs-plugin-zoom
+     needs Hammer.js loaded first for pinch/touch support; both load after
+     Chart.js and before use. ETH's own candle/timeframe chart uses its own
+     custom drag-zoom overlay and doesn't touch this plugin. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/hammer.js/2.0.8/hammer.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2/dist/chartjs-plugin-zoom.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
@@ -371,6 +377,7 @@
     </div>
   </div>
   <div class="stat-line" id="chartEchoNote" style="margin:-6px 0 14px;"></div>
+  <button id="simpleChartResetZoomBtn" class="mono" type="button" style="display:none;background:none;border:1px solid var(--amber);color:var(--amber);font-size:11px;padding:6px 10px;cursor:pointer;margin:-6px 0 14px;">Reset zoom</button>
   <div class="stat-line" id="smaToggleRow" style="margin:-10px 0 14px;display:flex;gap:16px;">
     <label class="mono" style="cursor:pointer;display:flex;align-items:center;gap:5px;">
       <input type="checkbox" id="smaShortToggle" checked><span id="smaShortLabel">SMA short</span>
@@ -647,6 +654,22 @@ const ASSET_FACTORS = {
 function horizonKeyToLabel(key){
   const m = key.match(/^([a-z]+)(\d+)$/i);
   return m ? m[2]+m[1] : key;
+}
+
+// Converts a horizon key into its duration in ms, purely so horizon keys can
+// be sorted chronologically (shortest to longest) client-side. This matters
+// because Postgres's jsonb column type does NOT preserve the original key
+// insertion order once round-tripped through Supabase — object keys come
+// back in some internal jsonb ordering (empirically alphabetical-looking for
+// short keys, e.g. 'h1','h4','m15' — which is exactly the out-of-order/
+// mislabeled bug this was causing), so Object.keys() on a horizons object
+// read from the database can never be trusted for order, only for the set
+// of keys that exist.
+const HORIZON_UNIT_MS = { m:60000, h:3600000, d:86400000 };
+function horizonKeyToMs(key){
+  const m = key.match(/^([a-z]+)(\d+)$/i);
+  if(!m) return Infinity;
+  return (HORIZON_UNIT_MS[m[1].toLowerCase()] || 1) * Number(m[2]);
 }
 
 let currentAsset = 'eth';
@@ -1141,10 +1164,24 @@ function setChartUIForAsset(asset){
   document.getElementById('volumeChartBox').style.display = isEth ? '' : 'none';
   document.getElementById('indicatorChartBox').style.display = isEth ? '' : 'none';
   document.getElementById('zoomOverlay').style.display = isEth ? '' : 'none';
+  document.getElementById('simpleChartResetZoomBtn').style.display = isEth ? 'none' : 'inline-block';
   if(!isEth){
     document.getElementById('resetZoomBtn').style.display = 'none';
     zoomRange = null;
   }
+}
+
+document.getElementById('simpleChartResetZoomBtn').addEventListener('click', ()=>{
+  if(chart && typeof chart.resetZoom === 'function') chart.resetZoom();
+});
+
+// chartjs-plugin-zoom's browser build assigns window.ChartZoom but doesn't
+// auto-register itself — done once here, guarded in case either CDN script
+// failed to load (the simple chart still renders fine without zoom/pan).
+if(window.Chart && window.ChartZoom){
+  Chart.register(ChartZoom);
+} else {
+  console.error('chartjs-plugin-zoom failed to load — gold/oil chart zoom/pan disabled');
 }
 
 // Gold/oil have no free equivalent to CoinGecko's live OHLC endpoint, so
@@ -1157,25 +1194,58 @@ function renderSimplePriceChart(priceCache, assetLabel){
   document.getElementById('candleChart').style.display = 'none';
   document.getElementById('priceChart').style.display = 'block';
   const noteEl = document.getElementById('chartEchoNote');
+  const baseNote = `Built from ${assetLabel}'s collected price history, not a live feed — timeframe browsing and candles aren't available for this asset. Scroll/pinch to zoom, drag to pan.`;
 
   if(!priceCache || priceCache.length < 2){
     if(chart){ chart.destroy(); chart = null; }
     if(noteEl) noteEl.textContent = `Not enough collected ${assetLabel} price history yet to chart.`;
     return;
   }
-  if(noteEl) noteEl.textContent = `Built from ${assetLabel}'s collected price history, not a live feed — timeframe browsing and candles aren't available for this asset.`;
 
   const labels = priceCache.map(p => new Date(p[0]).toLocaleDateString(undefined,{month:'short',day:'numeric'}));
   const closes = priceCache.map(p=>p[1]);
+  const datasets = [{ label:assetLabel, data:closes, borderColor:'#D9A441', borderWidth:1.5, pointRadius:0, tension:0.1 }];
+  let extendedLabels = labels;
+  noteEl.textContent = baseNote;
+
+  // Reuses the exact same analog-matching computation already driving the
+  // pattern-match cards below the chart (findAnalogs) — not a separate
+  // implementation. Same windowSize/horizon (24) and rmse<0.04 "good match"
+  // threshold as everywhere else this pattern-matching is used.
+  const { matches } = findAnalogs(priceCache, 24, 24);
+  const best = matches && matches.length ? matches[0] : null;
+  if(best && best.rmse < 0.04 && best.splitIndex < best.fullSeries.length-1){
+    const contRatios = [];
+    for(let j=best.splitIndex+1; j<best.fullSeries.length; j++){
+      contRatios.push(best.fullSeries[j]/best.fullSeries[best.splitIndex]);
+    }
+    const anchorPrice = closes[closes.length-1];
+    const lastTs = priceCache[priceCache.length-1][0];
+    const deltaMs = priceCache.length>1 ? (lastTs - priceCache[priceCache.length-2][0]) : 86400000;
+    const futureLabels = contRatios.map((_,j)=>new Date(lastTs+deltaMs*(j+1)).toLocaleDateString(undefined,{month:'short',day:'numeric'}));
+    extendedLabels = [...labels, ...futureLabels];
+    const echoValues = new Array(closes.length-1).fill(null);
+    echoValues.push(anchorPrice);
+    contRatios.forEach(r=>echoValues.push(anchorPrice*r));
+    datasets[0] = { label:assetLabel, data:[...closes, ...new Array(contRatios.length).fill(null)], borderColor:'#D9A441', borderWidth:1.5, pointRadius:0, tension:0.1 };
+    datasets.push({ label:'Similar past pattern (projected)', data:echoValues, borderColor:'#9B7FD4', borderWidth:1.5, borderDash:[5,4], pointRadius:0, tension:0.1 });
+    noteEl.textContent = `${baseNote} Dashed line: how the closest historical match to the recent price shape moved next — a projection for context, not a forecast.`;
+  }
 
   const ctx = document.getElementById('priceChart').getContext('2d');
   if(chart) chart.destroy();
   chart = new Chart(ctx, {
     type:'line',
-    data:{ labels, datasets:[{ label:assetLabel, data:closes, borderColor:'#D9A441', borderWidth:1.5, pointRadius:0, tension:0.1 }] },
+    data:{ labels:extendedLabels, datasets },
     options:{
       responsive:true, maintainAspectRatio:false,
-      plugins:{ legend:{ display:false } },
+      plugins:{
+        legend:{ display: datasets.length>1, labels:{ color:'#8A93A6', font:{family:'IBM Plex Mono', size:10} } },
+        zoom:{
+          pan:{ enabled:true, mode:'x' },
+          zoom:{ wheel:{ enabled:true }, pinch:{ enabled:true }, mode:'x' }
+        }
+      },
       scales:{
         x:{ ticks:{ color:'#8A93A6', maxTicksLimit:8, font:{family:'IBM Plex Mono', size:10} }, grid:{ color:'#2A2F3A' } },
         y:{ ticks:{ color:'#8A93A6', font:{family:'IBM Plex Mono', size:10} }, grid:{ color:'#2A2F3A' } }
@@ -1518,14 +1588,17 @@ function renderLogAndWeights(state, mode, asset){
     contextCell.querySelector('.desc').textContent = meta.contextDesc;
   }
 
-  // Horizon keys/labels come from the most recently logged signal's own data
-  // (not a hardcoded per-asset table) — ETH/gold log hour-based keys, oil
-  // logs day-based keys (OIL_MODE_CONFIGS), and this adapts to either. Falls
-  // back to a placeholder set only when there's no logged data yet to read.
+  // Horizon keys come from the most recently logged signal's own data (the
+  // SET of keys, not a hardcoded per-asset table) — ETH/gold log hour-based
+  // keys, oil logs day-based keys (OIL_MODE_CONFIGS). Their ORDER, though,
+  // is derived by sorting each key's own parsed duration (horizonKeyToMs)
+  // rather than trusting Object.keys()'s iteration order — see
+  // horizonKeyToMs's comment for why that order can't be trusted. Falls back
+  // to a placeholder set only when there's no logged data yet to read.
   const log = (state && state.log) || [];
   const sorted = [...log].sort((a,b)=>b.ts-a.ts);
   const horizons = sorted.length
-    ? Object.keys(sorted[0].horizons || {}).map(k=>[k, horizonKeyToLabel(k)])
+    ? Object.keys(sorted[0].horizons || {}).sort((a,b)=>horizonKeyToMs(a)-horizonKeyToMs(b)).map(k=>[k, horizonKeyToLabel(k)])
     : ((DEFAULT_HORIZON_LABELS[asset] && DEFAULT_HORIZON_LABELS[asset][mode]) || DEFAULT_HORIZON_LABELS.eth[mode] || []).map(l=>[l,l]);
   document.querySelectorAll('#logHead th').forEach((th,i)=>{ if(i>=4 && horizons[i-4]) th.textContent = horizons[i-4][1]; });
 
@@ -1576,15 +1649,21 @@ function renderLogAndWeights(state, mode, asset){
     }).join('');
   }
 
-  const parts = [];
-  horizons.forEach(([key,label])=>{
-    const graded = log.filter(e=>e.horizons && e.horizons[key] && e.horizons[key].graded);
-    if(graded.length){
+  // Always shows every one of this asset/mode's horizons, in chronological
+  // order, even ones with zero graded samples yet (e.g. a longer horizon
+  // that hasn't had time to resolve) — rather than silently dropping them,
+  // which made it look like that horizon didn't exist at all.
+  if(!sorted.length){
+    document.getElementById('statLine').textContent = 'No signals graded yet — grading happens automatically once each signal\'s time horizon has passed.';
+  } else {
+    const parts = horizons.map(([key,label])=>{
+      const graded = log.filter(e=>e.horizons && e.horizons[key] && e.horizons[key].graded);
+      if(!graded.length) return `${label} <span style="color:var(--dim);">not graded yet</span>`;
       const correct = graded.filter(e=>e.horizons[key].outcome==='correct').length;
-      parts.push(`${label} <b>${correct}/${graded.length}</b> (${Math.round(correct/graded.length*100)}%)`);
-    }
-  });
-  document.getElementById('statLine').innerHTML = parts.join(' · ') || 'No signals graded yet — grading happens automatically once each signal\'s time horizon has passed.';
+      return `${label} <b>${correct}/${graded.length}</b> (${Math.round(correct/graded.length*100)}%)`;
+    });
+    document.getElementById('statLine').innerHTML = parts.join(' · ');
+  }
 }
 
 async function refresh(){
